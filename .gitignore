@@ -172,3 +172,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+data/tokens.db
+data/tokens.db-shm
+data/tokens.db-wal
