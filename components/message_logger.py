@@ -11,13 +11,9 @@ class MessageLogger(commands.Component):
     @commands.Component.listener()
     async def event_message(self, payload: twitchio.ChatMessage) -> None:
         try:
-            # Get subscriber status from badges
             is_subscriber = any(badge.set_id == 'Subscriber' for badge in payload.badges)
-
-            # Serialize badges
             badges = [{"set_id": badge.set_id, "version": badge.id} for badge in payload.badges]
-            
-            # Prepare data for insertion
+            is_follower = await payload.chatter.follow_info() is not None            
             data = (
                 payload.id,
                 str(payload.chatter.id),
@@ -28,6 +24,7 @@ class MessageLogger(commands.Component):
                 payload.timestamp,
                 json.dumps(badges) if badges else None,
                 is_subscriber,
+                is_follower,
                 payload.type
             )
 
@@ -36,14 +33,15 @@ class MessageLogger(commands.Component):
             INSERT INTO messages (
                 message_id, user_id, username, display_name, 
                 channel_id, message_text, timestamp, 
-                badges, is_subscriber, message_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                badges, is_subscriber, is_follower, message_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             
             async with self.bot.token_database.acquire() as conn:
                 await conn.execute(query, data)
-
-            self.logger.debug(f"Logged message from {payload.chatter.display_name}")
+                
+            self.logger.debug(f"Saved message: {data}")
+            self.logger.info(f"Logged message from {payload.chatter.display_name}")
             
         except Exception as e:
             self.logger.error(f"Failed to log message: {e}", exc_info=True)
