@@ -19,4 +19,5 @@ class FollowAge(commands.Component):
             
         now = datetime.datetime.now(datetime.timezone.utc)
         follow_age = (now - follow_info.followed_at)
-        await ctx.reply(f"Вы следите за этим каналом уже {format_time_russian(follow_age.seconds)} дней!")
+        
+        await ctx.reply(f"Вы следите за этим каналом уже {format_time_russian(follow_age.total_seconds())}!")
