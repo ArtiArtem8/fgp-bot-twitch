@@ -1,25 +1,22 @@
 import twitchio
-import json
 import logging
 import datetime
 from twitchio.ext import commands
+from utils import format_time_russian
 
 class FollowAge(commands.Component):
     def __init__(self, bot):
         self.bot = bot
         self.logger = logging.getLogger("FollowAge")
 
-    @commands.command(aliases=["followage"])
+    @commands.command(name="followage")
     async def follow_age(self, ctx: commands.Context) -> None:
         follow_info: twitchio.ChannelFollowerEvent  = await ctx.chatter.follow_info()
         self.logger.debug(f"Follow info: {follow_info}")
-        print(follow_info)
-        if not follow_info:
-            await ctx.reply("You are not following this channel!")
-        else:
-            follow_age = (datetime.datetime.now() - follow_info.followed_at).days
-            await ctx.reply(f"You have been following this channel for {follow_age} days!")
         
-    
-    
-        
+        if follow_info is None:
+            return await ctx.reply(f"Ты не зафоловился на {ctx.broadcaster}!")
+            
+        now = datetime.datetime.now(datetime.timezone.utc)
+        follow_age = (now - follow_info.followed_at)
+        await ctx.reply(f"Вы следите за этим каналом уже {format_time_russian(follow_age.seconds)} дней!")
