@@ -4,10 +4,7 @@ import sqlite3
 import os
 import asqlite
 import twitchio
-import json
-import datetime
 import importlib
-import pkgutil
 from pathlib import Path
 from twitchio.ext import commands
 from twitchio import eventsub
@@ -104,7 +101,6 @@ class Bot(commands.Bot):
             refresh TEXT NOT NULL
         )
         """
-
         create_messages_table = """
         CREATE TABLE IF NOT EXISTS messages(
             message_id TEXT PRIMARY KEY,
@@ -116,6 +112,7 @@ class Bot(commands.Bot):
             timestamp DATETIME NOT NULL,
             badges TEXT,
             is_subscriber BOOLEAN,
+            is_follower BOOLEAN,
             message_type TEXT NOT NULL
         )
         """
