@@ -6,7 +6,6 @@ from twitchio.ext import commands
 class Socials(commands.Component):
     def __init__(self, bot):
         self.bot = bot
-        self.logger = logging.getLogger("Socials")
 
     @commands.command(aliases=["ds", "дс", "дискорд"])
     async def discord(self, ctx: commands.Context) -> None:
