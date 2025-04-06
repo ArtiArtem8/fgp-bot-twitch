@@ -1,6 +1,3 @@
-import twitchio
-import json
-import logging
 from twitchio.ext import commands
 
 class Socials(commands.Component):
