@@ -175,3 +175,4 @@ cython_debug/
 data/tokens.db
 data/tokens.db-shm
 data/tokens.db-wal
+pyproject.toml
