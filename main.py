@@ -1,24 +1,24 @@
 import asyncio
+import importlib
 import logging
 import sqlite3
-import os
+from pathlib import Path
+
 import asqlite
 import twitchio
-import importlib
-from pathlib import Path
-from twitchio.ext import commands
 from twitchio import eventsub
-from dotenv import load_dotenv
-from config import COMPONENTS_DIRECTORY, TOKENS_DATABASE_PATH
+from twitchio.ext import commands
+
+from config import (
+    BOT_ID,
+    CLIENT_ID,
+    CLIENT_SECRET,
+    COMPONENTS_DIRECTORY,
+    OWNER_ID,
+    TOKENS_DATABASE_PATH,
+)
 
 LOGGER: logging.Logger = logging.getLogger("Bot")
-
-load_dotenv()
-
-CLIENT_ID: str = os.getenv("TWITCH_BOT_APP_CLIENT_ID")
-CLIENT_SECRET: str = os.getenv("TWITCH_BOT_APP_CLIENT_SECRET")
-BOT_ID: str = os.getenv("TWITCH_BOT_ID")
-OWNER_ID: str = os.getenv("TWITCH_OWNER_ID")
 
 
 class Bot(commands.Bot):
