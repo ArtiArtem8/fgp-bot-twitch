@@ -1,4 +1,3 @@
-# utils.py
 def get_russian_word(n, singular, few, many):
     """
     Returns the correct Russian word form based on the number n.
