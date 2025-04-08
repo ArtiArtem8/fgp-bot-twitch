@@ -59,7 +59,8 @@ class FollowAge(commands.Component):
 
     async def _resolve_user(self, ctx: commands.Context, username: str) -> User | None:
         try:
-            users = await ctx.bot.fetch_users(names=[username])
+            users = await ctx.bot.fetch_users(logins=[username])
             return users[0] if users else None
         except Exception:
+            self.logger.error("Failed to resolve user", exc_info=True)
             return None
