@@ -14,7 +14,7 @@ class FollowAge(commands.Component):
 
     @commands.command(name="followage")
     async def follow_age(self, ctx: commands.Context, *, username: str = "") -> None:
-        username = username.strip().strip("").lstrip("@").lower()
+        username = username.strip().strip(" 󠀀").lstrip("@").lower()
         broadcaster = ctx.broadcaster
         target_user = (
             ctx.author if not username else await self._resolve_user(ctx, username)
