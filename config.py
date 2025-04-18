@@ -9,6 +9,7 @@ CLIENT_SECRET: str = os.getenv("TWITCH_BOT_APP_CLIENT_SECRET")
 BOT_ID: str = os.getenv("TWITCH_BOT_ID")
 OWNER_ID: str = os.getenv("TWITCH_OWNER_ID")
 CLIENT_ID: str = os.getenv("TWITCH_BOT_APP_CLIENT_ID")
+MUSIC_TOKEN: str = os.getenv("TRULA_MUSIC_TOKEN")
 
 BASE_DIR = Path(__file__).parent
 

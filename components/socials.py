@@ -18,7 +18,9 @@ class Socials(commands.Component):
     async def telegram(self, ctx: commands.Context) -> None:
         await ctx.reply("Телеграм: https://t.me/yabloko18twitch")
 
-    @commands.command(aliases=["бан", "удалить", "забанить"])
+    @commands.command(
+        aliases=["бан", "удалить", "забанить"]
+    )  # TODO: Добавить больще фановых сообщений о бане, например с другой вариацией, или что если забанить самого бота или стримера
     async def ban(self, ctx: commands.Context, *, username: str = "") -> None:
         username = username.strip().strip(" 󠀀").lstrip("@").lower()
 
@@ -41,3 +43,6 @@ class Socials(commands.Component):
         await ctx.reply(
             f"Внимание! Пользователь {user.mention} был удалён из чата! Это действие отменить нельзя!"
         )
+
+    # TODO: Текущее вермя стрима
+    # TODO: Попробовать получать текущую музыка с бота который установил МИша
