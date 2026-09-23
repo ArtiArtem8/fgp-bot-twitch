@@ -1,7 +1,7 @@
 import datetime
 import logging
 
-from twitchio import ChannelFollowerEvent, PartialUser, User
+from twitchio import ChannelFollowerEvent, Chatter, PartialUser, User
 from twitchio.ext import commands
 
 from utils import format_time_russian
@@ -21,7 +21,8 @@ class FollowAge(commands.Component):
         )
 
         if target_user is None:
-            return await ctx.reply("Пользователь не найден. Проверьте написание имени.")
+            await ctx.reply("Пользователь не найден. Проверьте написание имени.")
+            return
 
         follow_info = await self._get_follow_info(broadcaster, target_user)
 
@@ -31,7 +32,8 @@ class FollowAge(commands.Component):
                 if not username
                 else f"Пользователь {target_user.display_name} не зафоловлен на {broadcaster.display_name}!"
             )
-            return await ctx.reply(not_followed_msg)
+            await ctx.reply(not_followed_msg)
+            return
 
         followed_message = (
             "Вы следите за этим каналом уже {formatted_age}!"
@@ -43,7 +45,7 @@ class FollowAge(commands.Component):
         await self._reply_with_follow_age(ctx, follow_info, followed_message)
 
     async def _get_follow_info(
-        self, broadcaster: PartialUser, user: User
+        self, broadcaster: PartialUser, user: Chatter | PartialUser | User
     ) -> ChannelFollowerEvent | None:
         followers = await broadcaster.fetch_followers(user=user.id, max_results=1)
         return await anext(followers.followers, None)
@@ -52,9 +54,9 @@ class FollowAge(commands.Component):
         self, ctx: commands.Context, follow_info: ChannelFollowerEvent, message: str
     ):
         self.logger.debug(f"Follow info: {follow_info}")
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         follow_age = now - follow_info.followed_at
-        formatted_age = format_time_russian(follow_age.total_seconds())
+        formatted_age = format_time_russian(int(follow_age.total_seconds()))
         await ctx.reply(message.format(formatted_age=formatted_age))
 
     async def _resolve_user(self, ctx: commands.Context, username: str) -> User | None:

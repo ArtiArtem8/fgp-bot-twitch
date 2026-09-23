@@ -37,7 +37,8 @@ class MusicQueue(commands.Component):
         try:
             data = await self.fetch_queue()
             if not data:
-                return await ctx.reply("Сейчас в очереди нет музыки")
+                await ctx.reply("Сейчас в очереди нет музыки")
+                return
 
             # Find current track (first unwatched)
             current_track = next(
@@ -67,7 +68,8 @@ class MusicQueue(commands.Component):
         try:
             data = await self.fetch_queue()
             if not data:
-                return await ctx.reply("Музыкальная очередь пуста")
+                await ctx.reply("Музыкальная очередь пуста")
+                return
 
             queue = []
             current_found = False

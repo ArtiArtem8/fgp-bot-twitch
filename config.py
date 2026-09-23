@@ -11,6 +11,9 @@ OWNER_ID: str = os.getenv("TWITCH_OWNER_ID")
 CLIENT_ID: str = os.getenv("TWITCH_BOT_APP_CLIENT_ID")
 MUSIC_TOKEN: str = os.getenv("TRULA_MUSIC_TOKEN")
 
+os.environ["HTTP_PROXY"] = "http://127.0.0.1:12334"
+os.environ["HTTPS_PROXY"] = "http://127.0.0.1:12334"
+
 BASE_DIR = Path(__file__).parent
 
 COMPONENTS_DIRECTORY = BASE_DIR / "components"
