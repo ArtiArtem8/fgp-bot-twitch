@@ -1,0 +1,30 @@
+title = "FGPbot secret scanning"
+
+[extend]
+useDefault = true
+
+# Exact synthetic fixtures only; other values in these files remain scanned.
+[[allowlists]]
+description = "Synthetic client secret used by local test doubles"
+condition = "AND"
+paths = ['''^tests/helpers\.py$''']
+regexTarget = "secret"
+regexes = ['''^synthetic-client-secret$''']
+
+[[allowlists]]
+description = "Synthetic token used to verify log redaction"
+condition = "AND"
+paths = ['''^tests/test_core\.py$''']
+regexTarget = "secret"
+regexes = ['''^abcdef123456$''']
+
+[[rules]]
+id = "fgpbot-client-secret"
+description = "Client secret assignment, including multiline annotated Python constants"
+regex = '''(?i)(?:client_secret|twitch_bot_app_client_secret)["']?\s*(?::\s*str\s*)?[:=]\s*\(?\s*["']([a-z0-9_+/=-]{20,})["']'''
+secretGroup = 1
+
+[[rules]]
+id = "fgpbot-private-file"
+description = "Local configuration, credentials, databases and logs must stay out of Git"
+path = '''(?i)(?:^|/)(?:\.env(?:\.(?:local|production|development|test|backup|bak))?|[^/]+\.(?:db(?:-(?:shm|wal|journal))?|sqlite(?:3)?(?:-(?:shm|wal|journal))?|pem|key|log))$'''

@@ -1,0 +1,3 @@
+# Explicit setup only. Startup never installs or updates packages.
+aiohttp>=3.13.3,<4
+python-dotenv>=1.2.2,<2

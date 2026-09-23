@@ -1,55 +1,25 @@
 @echo off
-setlocal EnableDelayedExpansion
-
-:: Configuration
-set BOT_NAME=FGPbot
-set BOT_DIR="%~dp0"
-set VENV_ACTIVATE=".venv\Scripts\activate"
-
-:: Change to bot directory
-cd /d %BOT_DIR%
-
-:: Verify virtual environment exists
-if not exist %VENV_ACTIVATE% (
-    echo ERROR: Virtual environment not found in %BOT_DIR%
-    echo Please create a virtual environment in the .venv folder
-    pause
-    exit /b 1
+setlocal
+chcp 65001 >nul
+cd /d "%~dp0" || exit /b 2
+if not exist ".venv\Scripts\python.exe" (
+    echo ERROR: Run setup.bat first. Virtual environment is missing.
+    exit /b 2
 )
-
-:MAIN_LOOP
-cls
-echo ==============================================
-echo      Starting %BOT_NAME% Twitch Bot
-echo ==============================================
-echo.
-
-:: Activate virtual environment and run bot
-call %VENV_ACTIVATE%
-echo [%time%] Starting %BOT_NAME%...
-python main.py
-set "EXIT_CODE=%ERRORLEVEL%"
-
-:: Handle exit codes
-if %EXIT_CODE% EQU 0 (
-    echo [%time%] Bot stopped normally
-) else (
-    echo [%time%] Bot crashed with error code %EXIT_CODE%
-)
-
-:: Restart logic
-echo.
-choice /M "Restart bot? (Y will restart, N will exit)" /C YN /T 10 /D N
-if errorlevel 2 (
-    echo Closing %BOT_NAME%...
-    timeout /t 1 /nobreak > nul
-    exit /b 0
-)
+".venv\Scripts\python.exe" -c "import aiohttp, dotenv; import fgpbot.cli" >nul 2>nul
 if errorlevel 1 (
-    echo Restarting %BOT_NAME% in 3 seconds...
-    timeout /t 3 /nobreak > nul
-    goto MAIN_LOOP
+    echo ERROR: Python dependencies or source files are incomplete. Run setup.bat and selftest.bat.
+    exit /b 2
 )
-
-endlocal
-exit /b 0
+:RUN
+".venv\Scripts\python.exe" -u main.py run
+set "BOT_EXIT=%ERRORLEVEL%"
+if "%BOT_EXIT%"=="0" exit /b 0
+if "%BOT_EXIT%"=="2" (
+    echo Configuration error. Fix .env and restart the launcher.
+    exit /b 2
+)
+if "%BOT_EXIT%"=="3" exit /b 3
+echo FGPbot exited with code %BOT_EXIT%. Restarting in 20 seconds...
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 20"
+goto RUN
