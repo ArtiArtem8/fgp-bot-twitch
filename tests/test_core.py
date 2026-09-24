@@ -13,12 +13,15 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+import msgspec
+
 from fgpbot import cli
 from fgpbot.commands import format_queue, format_time_russian, parse_command, russian_word
 from fgpbot.config import ConfigError, load_config
 from fgpbot.health import Health, SingleInstance, atomic_json, read_status, status_writer
 from fgpbot.security import REDACT, Redactor, SafeFormatter
 from fgpbot.storage import Store
+from fgpbot.wire import Badge, ChatEvent
 from tests.helpers import StoreCase, notification, ready, until
 
 
@@ -240,7 +243,7 @@ class StorageTests(StoreCase):
         if legacy is None:
             raise AssertionError("Legacy token disappeared during migration")
         self.assertEqual(legacy["token"], "legacy-access")
-        event = notification()["payload"]["event"]
+        event = msgspec.convert(notification()["payload"]["event"], type=ChatEvent)
         await store.log_message(event, "2020-01-01T00:00:00Z")
         await store.initialize()
         await store.cleanup(0)
@@ -262,8 +265,8 @@ class StorageTests(StoreCase):
         self.assertEqual((await self.token_row("100"))["token"], "manual-new")
 
     async def test_message_insert_is_idempotent_and_follower_unknown(self) -> None:
-        event = notification()["payload"]["event"]
-        event["badges"] = [{"set_id": "subscriber", "id": "1"}]
+        event = msgspec.convert(notification()["payload"]["event"], type=ChatEvent)
+        event = msgspec.structs.replace(event, badges=[Badge("subscriber", "1")])
         await self.store.log_message(event, "2026-01-01T00:00:00Z")
         await self.store.log_message(event, "2026-01-01T00:00:00Z")
         rows = await self.store.call(lambda db: db.execute("SELECT * FROM messages").fetchall())

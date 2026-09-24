@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import aiohttp
 
@@ -21,6 +21,7 @@ from .twitch import DeliveryError, Twitch
 
 if TYPE_CHECKING:
     from .config import Config
+    from .wire import Frame
 
 LOG = logging.getLogger(__name__)
 AUDIT_INITIAL_DELAY = 15
@@ -35,13 +36,11 @@ class Application:
 
     def __init__(self, config: Config, store: Store, api: Twitch, state: Health) -> None:
         self.config, self.store, self.api, self.state = config, store, api, state
-        self.queue: asyncio.Queue[tuple[float, dict[str, Any]]] = asyncio.Queue(
-            maxsize=config.queue_size
-        )
+        self.queue: asyncio.Queue[tuple[float, Frame]] = asyncio.Queue(maxsize=config.queue_size)
         self.commands = Commands(config, api, store, state)
         self.eventsub = EventSub(config, api, state, self.enqueue)
 
-    def enqueue(self, frame: dict[str, Any]) -> None:
+    def enqueue(self, frame: Frame) -> None:
         try:
             self.queue.put_nowait((time.monotonic(), frame))
             self.state.queue_depth = self.queue.qsize()
@@ -78,7 +77,7 @@ class Application:
                 self.state.queue_depth = self.queue.qsize()
                 self.state.worker_mono = time.monotonic()
 
-    async def _handle_frame(self, queued: float, frame: dict[str, Any]) -> None:
+    async def _handle_frame(self, queued: float, frame: Frame) -> None:
         if time.monotonic() - queued > MAX_QUEUE_AGE_SECONDS:
             self.state.dropped_events += 1
             self.state.last_drop_at = time.time()

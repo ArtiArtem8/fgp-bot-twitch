@@ -10,26 +10,26 @@ depends_on = []
 
 [[modules]]
 path = "fgpbot.app"
-depends_on = ["fgpbot.twitch", "fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.eventsub", "fgpbot.commands", "fgpbot.health", "fgpbot.config"]
+depends_on = ["fgpbot.twitch", "fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.eventsub", "fgpbot.commands", "fgpbot.health", "fgpbot.config", "fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.auth"
-depends_on = ["fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.config"]
+depends_on = ["fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.config", "fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.cli"
-depends_on = ["fgpbot.tokens", "fgpbot.config", "fgpbot.storage", "fgpbot.app", "fgpbot.twitch", "fgpbot.auth", "fgpbot.network", "fgpbot.health", "fgpbot.security"]
+depends_on = ["fgpbot.tokens", "fgpbot.config", "fgpbot.storage", "fgpbot.app", "fgpbot.twitch", "fgpbot.auth", "fgpbot.network", "fgpbot.health", "fgpbot.security", "fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.commands"
-depends_on = ["fgpbot.config", "fgpbot.network", "fgpbot.storage", "fgpbot.security", "fgpbot.health", "fgpbot.twitch", "fgpbot.tokens"]
+depends_on = ["fgpbot.config", "fgpbot.network", "fgpbot.storage", "fgpbot.security", "fgpbot.health", "fgpbot.twitch", "fgpbot.tokens", "fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.config"
 
 [[modules]]
 path = "fgpbot.eventsub"
-depends_on = ["fgpbot.twitch", "fgpbot.config", "fgpbot.tokens", "fgpbot.health", "fgpbot.network"]
+depends_on = ["fgpbot.twitch", "fgpbot.config", "fgpbot.tokens", "fgpbot.health", "fgpbot.network", "fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.health"
@@ -44,11 +44,16 @@ path = "fgpbot.security"
 
 [[modules]]
 path = "fgpbot.storage"
+depends_on = ["fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.tokens"
-depends_on = ["fgpbot.storage", "fgpbot.config", "fgpbot.network", "fgpbot.security"]
+depends_on = ["fgpbot.storage", "fgpbot.config", "fgpbot.network", "fgpbot.security", "fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.twitch"
-depends_on = ["fgpbot.network", "fgpbot.config", "fgpbot.tokens"]
+depends_on = ["fgpbot.network", "fgpbot.config", "fgpbot.tokens", "fgpbot.wire"]
+
+[[modules]]
+path = "fgpbot.wire"
+depends_on = ["fgpbot.network"]

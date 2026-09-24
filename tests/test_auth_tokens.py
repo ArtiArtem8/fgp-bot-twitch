@@ -5,17 +5,24 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
+import msgspec
+
 from fgpbot.auth import Authorization
 from fgpbot.config import CHAT_SCOPES, FOLLOW_SCOPE
 from fgpbot.network import NetworkError, ProtocolError, RemoteError
 from fgpbot.tokens import TOKEN_URL, VALIDATE, AuthRequiredError, Tokens
-from tests.helpers import StoreCase, identity
+from fgpbot.wire import OAuthTokens, OAuthValidate
+from tests.helpers import StoreCase
+from tests.helpers import identity as raw_identity
 
 if TYPE_CHECKING:
     from aiohttp import web
 
     from fgpbot.network import Http
-    from tests.helpers import Payload
+
+
+def identity(user_id: str = "100", **kwargs: object) -> OAuthValidate:
+    return msgspec.convert(raw_identity(user_id, **kwargs), type=OAuthValidate)
 
 
 class TokenTests(StoreCase):
@@ -35,7 +42,7 @@ class TokenTests(StoreCase):
     async def test_refresh_saves_new_pair_not_original_input(self) -> None:
         self.http.request.side_effect = [
             RemoteError(401, "expired"),
-            {"access_token": "synthetic-new-access", "refresh_token": "synthetic-new-refresh"},
+            OAuthTokens("synthetic-new-access", "synthetic-new-refresh"),
             identity(),
         ]
         result = await self.tokens.get("100", CHAT_SCOPES)
@@ -52,7 +59,7 @@ class TokenTests(StoreCase):
     async def test_parallel_expired_token_requests_refresh_once(self) -> None:
         self.http.request.side_effect = [
             RemoteError(401, "expired"),
-            {"access_token": "synthetic-new-access", "refresh_token": "synthetic-new-refresh"},
+            OAuthTokens("synthetic-new-access", "synthetic-new-refresh"),
             identity(),
         ]
         tokens = await asyncio.gather(*(self.tokens.get("100", CHAT_SCOPES) for _ in range(10)))
@@ -62,7 +69,7 @@ class TokenTests(StoreCase):
     async def test_rotation_persists_even_if_next_validation_has_network_error(self) -> None:
         self.http.request.side_effect = [
             RemoteError(401, "expired"),
-            {"access_token": "synthetic-new-access", "refresh_token": "synthetic-new-refresh"},
+            OAuthTokens("synthetic-new-access", "synthetic-new-refresh"),
             NetworkError("lost"),
         ]
         with self.assertRaises(NetworkError):
@@ -77,7 +84,7 @@ class TokenTests(StoreCase):
     async def test_background_near_expiry_refresh_is_persisted(self) -> None:
         self.http.request.side_effect = [
             identity(expires_in=240),
-            {"access_token": "synthetic-new-access", "refresh_token": "synthetic-new-refresh"},
+            OAuthTokens("synthetic-new-access", "synthetic-new-refresh"),
             identity(),
         ]
         await self.tokens.get("100")
@@ -98,15 +105,14 @@ class TokenTests(StoreCase):
         self.assertEqual((await self.tokens.get("100")).access, "synthetic-manual-access")
 
     async def test_refresh_does_not_clobber_simultaneous_explicit_authorization(self) -> None:
-        async def respond(method: str, _url: str, **kwargs: dict[str, str]) -> Payload:
+        async def respond(
+            method: str, _url: str, **kwargs: dict[str, str]
+        ) -> OAuthTokens | OAuthValidate:
             if method == "POST":
                 await self.store.save_token(
                     "100", "synthetic-manual-access", "synthetic-manual-refresh"
                 )
-                return {
-                    "access_token": "synthetic-rotation-access",
-                    "refresh_token": "synthetic-rotation-refresh",
-                }
+                return OAuthTokens("synthetic-rotation-access", "synthetic-rotation-refresh")
             if kwargs["headers"]["Authorization"].endswith("synthetic-old-access"):
                 raise RemoteError(401, "expired")
             return identity()
@@ -131,7 +137,7 @@ class TokenTests(StoreCase):
     async def test_malformed_rotation_not_persisted(self) -> None:
         self.http.request.side_effect = [
             RemoteError(401, "expired"),
-            {"access_token": 123, "refresh_token": {}},
+            ProtocolError("OAuth refresh: неверный тип поля"),
         ]
         with self.assertRaises(ProtocolError):
             await self.tokens.get("100")
@@ -166,10 +172,7 @@ class AuthorizationTests(StoreCase):
         self.http = SimpleNamespace(
             request=AsyncMock(
                 side_effect=[
-                    {
-                        "access_token": "synthetic-authorized-access",
-                        "refresh_token": "synthetic-authorized-refresh",
-                    },
+                    OAuthTokens("synthetic-authorized-access", "synthetic-authorized-refresh"),
                     identity(),
                 ]
             )
@@ -209,7 +212,7 @@ class AuthorizationTests(StoreCase):
     async def test_wrong_account_cannot_overwrite_existing_bot_token(self) -> None:
         await self.store.save_token("100", "existing-access", "existing-refresh")
         self.http.request.side_effect = [
-            {"access_token": "synthetic-new-access", "refresh_token": "synthetic-new-refresh"},
+            OAuthTokens("synthetic-new-access", "synthetic-new-refresh"),
             identity(user_id="999"),
         ]
         response = await self.flow.callback(
@@ -229,7 +232,7 @@ class AuthorizationTests(StoreCase):
 
     async def test_granted_scopes_must_match_request(self) -> None:
         self.http.request.side_effect = [
-            {"access_token": "synthetic-new-access", "refresh_token": "synthetic-new-refresh"},
+            OAuthTokens("synthetic-new-access", "synthetic-new-refresh"),
             identity(scopes=[]),
         ]
         response = await self.flow.callback(

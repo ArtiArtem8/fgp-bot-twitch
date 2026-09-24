@@ -12,7 +12,9 @@ from fgpbot.commands import Commands, Music
 from fgpbot.network import NetworkError, ProtocolError
 from fgpbot.tokens import AuthRequiredError
 from fgpbot.twitch import DeliveryError
-from tests.helpers import StoreCase, cancel, fake_api, notification, ready
+from fgpbot.wire import Follow, Followers, User
+from tests.helpers import StoreCase, cancel, fake_api, ready
+from tests.helpers import typed_notification as notification
 
 if TYPE_CHECKING:
     from fgpbot.twitch import Twitch
@@ -100,7 +102,7 @@ class CommandTests(StoreCase):
         self.assertEqual(self.state.features["followage"], "AUTH_REQUIRED")
 
     async def test_followage_bot_moderator_fallback_after_owner_failure(self) -> None:
-        self.api.request.side_effect = [AuthRequiredError("owner revoked"), {"data": []}]
+        self.api.request.side_effect = [AuthRequiredError("owner revoked"), Followers([])]
         await self.commands.handle(notification("!followage"))
         self.assertIn("не зафоловлен", self.api.send.call_args.args[0])
         self.assertEqual(
@@ -108,7 +110,7 @@ class CommandTests(StoreCase):
         )
 
     async def test_followage_success_formats_real_date(self) -> None:
-        self.api.request.return_value = {"data": [{"followed_at": "2020-01-01T00:00:00Z"}]}
+        self.api.request.return_value = Followers([Follow("2020-01-01T00:00:00Z")])
         await self.commands.handle(notification("!followage"))
         self.assertIn("следит за каналом", self.api.send.call_args.args[0])
         self.assertEqual(self.state.features["followage"], "READY")
@@ -126,7 +128,7 @@ class CommandTests(StoreCase):
     async def test_social_aliases_and_joke_ban_no_moderation_api(self) -> None:
         for i, text in enumerate(("!ДС", "!тг", "!help")):
             await self.commands.handle(notification(text, message_id=f"alias-{i}"))
-        self.api.users.return_value = [{"id": "400", "login": "friend"}]
+        self.api.users.return_value = [User("400", "friend")]
         await self.commands.handle(notification("!бан friend", message_id="ban"))
         self.assertIn("Шуточный", self.api.send.call_args.args[0])
         self.api.request.assert_not_awaited()

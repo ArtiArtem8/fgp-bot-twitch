@@ -30,8 +30,21 @@ security.SafeFormatter → консоль / rotating log
 `config.py` знает настройки и пути. `tokens.py` владеет валидацией, обновлением и
 кэшем токенов. `twitch.py` знает небольшую используемую часть Helix. `eventsub.py`
 владеет жизненным циклом сокета, но не выполняет команды. `commands.py` не зависит
-от конкретного WebSocket и получает обычные данные событий. `storage.py` единственный
+от конкретного WebSocket и получает проверенные объекты событий. `storage.py` единственный
 владелец SQL. `health.py` описывает наблюдаемое состояние, не симулируя успешную работу.
+
+`network.Http` ограничивает размер тела, управляет timeout/proxy/retry и декодирует
+успешный HTTP JSON прямо в модель, переданную слоем Twitch. `wire.py` содержит только
+используемые схемы `msgspec.Struct` для OAuth, Helix и EventSub. Неизвестные новые
+поля Twitch пропускаются; отсутствие или неверный тип нужного поля превращаются в
+`ProtocolError` без вывода сырого тела. EventSub сначала декодирует metadata и
+`msgspec.Raw` payload, затем выбирает схему welcome, notification, reconnect или
+revocation. Проверенный notification попадает в очередь и обработчик команд.
+
+```text
+Twitch HTTP     → aiohttp HTTP → msgspec validation → typed wire objects
+Twitch EventSub → aiohttp WS   → msgspec envelope/payload → app queue → Commands
+```
 
 Это явная композиция объектов в точке запуска, не DI-фреймворк. Небольшое количество
 объектов позволяет заменить сетевую границу имитатором, не переписывая бизнес-логику.

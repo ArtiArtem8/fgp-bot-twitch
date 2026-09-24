@@ -5,6 +5,7 @@ description = "Local single-channel Twitch bot with explicit readiness and end-t
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "aiohttp>=3.13.3,<4",
+    "msgspec>=0.21.1,<1",
     "python-dotenv>=1.2.2,<2",
 ]
 
@@ -62,10 +63,6 @@ ignore = [
 "fgpbot/config.py" = ["ambiguous-unicode-character-string"]
 "fgpbot/tokens.py" = ["ambiguous-unicode-character-string"]
 "fgpbot/health.py" = ["import-outside-top-level"] # msvcrt/fcntl exist on different OSes.
-# aiohttp/WebSocket and decoded JSON are dynamic external API boundaries.
-"fgpbot/eventsub.py" = ["any-type"]
-"fgpbot/network.py" = ["any-type"]
-"fgpbot/twitch.py" = ["any-type"]
 # The notification fixture exposes independent wire fields; grouping them
 # would make individual protocol scenarios harder to read.
 "tests/helpers.py" = ["too-many-arguments"]

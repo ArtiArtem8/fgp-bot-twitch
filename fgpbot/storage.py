@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sqlite3
 import time
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
+import msgspec
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+    from .wire import ChatEvent
 
 PROBE_COOLDOWN_SECONDS = 30
 SCHEMA = """
@@ -107,21 +110,21 @@ class Store:
             )
         )
 
-    async def log_message(self, event: dict[str, Any], timestamp: str) -> None:
-        badges = event.get("badges", [])
-        subscriber = any(b.get("set_id", "").lower() in {"subscriber", "founder"} for b in badges)
+    async def log_message(self, event: ChatEvent, timestamp: str) -> None:
+        badges = event.badges
+        subscriber = any(b.set_id.lower() in {"subscriber", "founder"} for b in badges)
         values = (
-            event["message_id"],
-            event["chatter_user_id"],
-            event.get("chatter_user_login", ""),
-            event.get("chatter_user_name", ""),
-            event["broadcaster_user_id"],
-            event["message"]["text"],
+            event.message_id,
+            event.chatter_user_id,
+            event.chatter_user_login,
+            event.chatter_user_name,
+            event.broadcaster_user_id,
+            event.message.text,
             timestamp,
-            json.dumps(badges, ensure_ascii=False),
+            msgspec.json.encode(badges).decode(),
             subscriber,
             None,
-            event.get("message_type", "text"),
+            event.message_type,
         )
         # Follower status is unknown, NOT false. No API request per message.
         await self.call(

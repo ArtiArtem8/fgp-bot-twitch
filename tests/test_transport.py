@@ -5,14 +5,16 @@ import json
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
+import msgspec
 
 from fgpbot.eventsub import EventSub, RecentIDs, TransportError, reconnect_url
 from fgpbot.network import Http, NetworkError, ProtocolError, RemoteError
 from fgpbot.twitch import DeliveryError, Twitch
+from fgpbot.wire import SendChat, Session, Subscription, Subscriptions, User, eventsub
 from tests.helpers import (
     StoreCase,
     cancel,
@@ -26,6 +28,8 @@ from tests.helpers import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from fgpbot.wire import Frame
 
 
 class FakeSocket:
@@ -45,6 +49,17 @@ class FakeSocket:
 
     async def close(self) -> None:
         self.closed = True
+
+    def typed(self) -> aiohttp.ClientWebSocketResponse:
+        return cast("aiohttp.ClientWebSocketResponse", self)
+
+
+def wire_frame(value: object) -> Frame:
+    return eventsub(msgspec.json.encode(value))
+
+
+def subscription_page(value: object) -> Subscriptions:
+    return msgspec.convert(value, type=Subscriptions)
 
 
 class URLTests(unittest.TestCase):
@@ -84,7 +99,7 @@ class SubscriptionTests(StoreCase):
         self.addCleanup(self.request_patch.stop)
 
     async def test_subscription_explicitly_uses_bot_identity_and_channel(self) -> None:
-        self.request.return_value = {"data": [subscription()]}
+        self.request.return_value = subscription_page({"data": [subscription()]})
         await self.api.subscribe("session-1", "channel.chat.message")
         body = self.request.call_args.kwargs["json"]
         self.assertEqual(body["condition"], {"broadcaster_user_id": "200", "user_id": "100"})
@@ -93,15 +108,18 @@ class SubscriptionTests(StoreCase):
     async def test_409_is_not_success_when_other_session_owns_subscription(self) -> None:
         self.request.side_effect = [
             RemoteError(409, "duplicate"),
-            {"data": [subscription("wrong-session")]},
+            subscription_page({"data": [subscription("wrong-session")]}),
         ]
         with self.assertRaises(ProtocolError):
             await self.api.subscribe("session-1", "channel.chat.message")
 
     async def test_409_same_active_session_is_idempotent_success(self) -> None:
-        self.request.side_effect = [RemoteError(409, "duplicate"), {"data": [subscription()]}]
+        self.request.side_effect = [
+            RemoteError(409, "duplicate"),
+            subscription_page({"data": [subscription()]}),
+        ]
         self.assertEqual(
-            (await self.api.subscribe("session-1", "channel.chat.message"))["id"],
+            (await self.api.subscribe("session-1", "channel.chat.message")).id,
             subscription()["id"],
         )
 
@@ -111,40 +129,46 @@ class SubscriptionTests(StoreCase):
             subscription(condition={"broadcaster_user_id": "200", "user_id": "999"}),
             None,
         ):
-            self.assertFalse(self.api.matches(sub, "session-1", "channel.chat.message"))
+            typed = msgspec.convert(sub, type=Subscription) if sub else None
+            self.assertFalse(self.api.matches(typed, "session-1", "channel.chat.message"))
 
     async def test_subscription_pagination_and_repeated_cursor_guard(self) -> None:
         self.request.side_effect = [
-            {"data": [subscription()], "pagination": {"cursor": "next"}},
-            {"data": [], "pagination": {}},
+            subscription_page({"data": [subscription()], "pagination": {"cursor": "next"}}),
+            subscription_page({"data": [], "pagination": {}}),
         ]
         self.assertEqual(len(await self.api.subscriptions()), 1)
         self.request.side_effect = [
-            {"data": [], "pagination": {"cursor": "loop"}},
-            {"data": [], "pagination": {"cursor": "loop"}},
+            subscription_page({"data": [], "pagination": {"cursor": "loop"}}),
+            subscription_page({"data": [], "pagination": {"cursor": "loop"}}),
         ]
         with self.assertRaises(ProtocolError):
             await self.api.subscriptions()
 
     async def test_send_requires_is_sent_and_message_id(self) -> None:
-        self.request.return_value = {
-            "data": [
-                {
-                    "message_id": "",
-                    "is_sent": False,
-                    "drop_reason": {"code": "automod", "message": "held"},
-                }
-            ]
-        }
+        self.request.return_value = msgspec.convert(
+            {
+                "data": [
+                    {
+                        "message_id": "",
+                        "is_sent": False,
+                        "drop_reason": {"code": "automod", "message": "held"},
+                    }
+                ]
+            },
+            type=SendChat,
+        )
         with self.assertRaises(DeliveryError):
             await self.api.send("hi")
         self.api._next_send = 0
-        self.request.return_value = {"data": [{"is_sent": True}]}
+        self.request.return_value = msgspec.convert({"data": [{"is_sent": True}]}, type=SendChat)
         with self.assertRaises(ProtocolError):
             await self.api.send("hi")
 
     async def test_send_target_length_and_no_invalid_source_only_parameter(self) -> None:
-        self.request.return_value = {"data": [{"is_sent": True, "message_id": "sent"}]}
+        self.request.return_value = msgspec.convert(
+            {"data": [{"is_sent": True, "message_id": "sent"}]}, type=SendChat
+        )
         self.assertEqual(await self.api.send("x" * 700, reply_to="parent"), "sent")
         body = self.request.call_args.kwargs["json"]
         self.assertEqual((body["broadcaster_id"], body["sender_id"]), ("200", "100"))
@@ -180,12 +204,12 @@ class EventSubTests(StoreCase):
 
     async def test_failed_initial_subscription_closes_open_socket(self) -> None:
         socket = FakeSocket()
-        self.api.users.return_value = [{"id": self.config.channel_id, "login": "channel"}]
+        self.api.users.return_value = [User(self.config.channel_id, "channel")]
         with (
             patch.object(
                 self.eventsub,
                 "_open",
-                new=AsyncMock(return_value=(socket, {"id": "session-1"})),
+                new=AsyncMock(return_value=(socket.typed(), Session("session-1"))),
             ),
             patch.object(
                 self.eventsub,
@@ -207,13 +231,13 @@ class EventSubTests(StoreCase):
             welcome(keepalive=601),
         ):
             with self.subTest(frame=frame), self.assertRaises(ProtocolError):
-                self.eventsub._validate_welcome(frame)
+                self.eventsub._validate_welcome(wire_frame(frame))
 
     async def test_notifications_are_deduplicated_and_wrong_channel_filtered(self) -> None:
         frame = notification()
-        self.eventsub._notification(frame)
-        self.eventsub._notification(frame)
-        self.eventsub._notification(notification(channel="999"))
+        self.eventsub._notification(wire_frame(frame))
+        self.eventsub._notification(wire_frame(frame))
+        self.eventsub._notification(wire_frame(notification(channel="999")))
         self.assertEqual(len(self.frames), 1)
         self.assertEqual(self.state.duplicate_events, 1)
         self.assertEqual(self.state.filtered_events, 1)
@@ -225,25 +249,25 @@ class EventSubTests(StoreCase):
             "payload": {"subscription": subscription(status="authorization_revoked")},
         }
         with self.assertRaises(TransportError):
-            self.eventsub._notification(frame)
+            self.eventsub._notification(wire_frame(frame))
         self.assertFalse(self.state.transport_ready)
 
     async def test_missing_keepalive_times_out_even_if_socket_not_closed(self) -> None:
         ws = FakeSocket()
         with self.assertRaises(TimeoutError):
-            await self.eventsub._receive(ws, 0.02)
+            await self.eventsub._receive(ws.typed(), 0.02)
 
     async def test_invalid_frame_is_protocol_error(self) -> None:
         ws = FakeSocket()
         ws.put(["not", "an", "object"])
         with self.assertRaises(ProtocolError):
-            await self.eventsub._receive(ws, 1)
+            await self.eventsub._receive(ws.typed(), 1)
 
     async def test_keepalive_updates_health_without_chat_messages(self) -> None:
         ready(self.state)
         ws = FakeSocket()
         self.state.last_frame_mono -= 100
-        task = asyncio.create_task(self.eventsub._listen(ws))
+        task = asyncio.create_task(self.eventsub._listen(ws.typed()))
         try:
             ws.put({"metadata": {"message_type": "session_keepalive"}, "payload": {}})
             await until(lambda: self.state.transport_ready)
@@ -260,15 +284,15 @@ class EventSubTests(StoreCase):
         old, new = FakeSocket(), FakeSocket()
         gate, opening = asyncio.Event(), asyncio.Event()
 
-        async def open_new(_url: str) -> tuple[FakeSocket, dict[str, Any]]:
+        async def open_new(_url: str) -> tuple[aiohttp.ClientWebSocketResponse, Session]:
             opening.set()
             await gate.wait()
-            return new, {"id": "session-2", "keepalive_timeout_seconds": None}
+            return new.typed(), Session("session-2")
 
         open_patch = patch.object(self.eventsub, "_open", new=open_new)
         open_patch.start()
         self.addCleanup(open_patch.stop)
-        task = asyncio.create_task(self.eventsub._listen(old))
+        task = asyncio.create_task(self.eventsub._listen(old.typed()))
         try:
             old.put({
                 "metadata": {"message_type": "session_reconnect"},
@@ -298,15 +322,15 @@ class EventSubTests(StoreCase):
         old, new = FakeSocket(), FakeSocket()
         gate, opening = asyncio.Event(), asyncio.Event()
 
-        async def open_new(_url: str) -> tuple[FakeSocket, dict[str, Any]]:
+        async def open_new(_url: str) -> tuple[aiohttp.ClientWebSocketResponse, Session]:
             opening.set()
             await gate.wait()
-            return new, {"id": "session-2", "keepalive_timeout_seconds": 30}
+            return new.typed(), Session("session-2", keepalive_timeout_seconds=30)
 
         open_patch = patch.object(self.eventsub, "_open", new=open_new)
         open_patch.start()
         self.addCleanup(open_patch.stop)
-        task = asyncio.create_task(self.eventsub._listen(old))
+        task = asyncio.create_task(self.eventsub._listen(old.typed()))
         try:
             old.put({
                 "metadata": {"message_type": "session_reconnect"},

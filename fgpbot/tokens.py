@@ -7,10 +7,11 @@ import logging
 import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .network import ProtocolError, RemoteError
 from .security import REDACT
+from .wire import OAuthTokens, OAuthValidate
 
 if TYPE_CHECKING:
     from .config import Config
@@ -50,24 +51,18 @@ class Tokens:
         self._cache: dict[str, Token] = {}
         self._blocked: dict[str, tuple[tuple[str, str], str]] = {}
 
-    async def validate(self, access: str, expected_user: str) -> dict[str, Any]:
+    async def validate(self, access: str, expected_user: str) -> OAuthValidate:
         REDACT.add(access)
         data = await self.http.request(
-            "GET", VALIDATE, headers={"Authorization": f"OAuth {access}"}
+            "GET", VALIDATE, headers={"Authorization": f"OAuth {access}"}, model=OAuthValidate
         )
-        if (
-            not isinstance(data, dict)
-            or not isinstance(data.get("scopes"), list)
-            or not all(isinstance(scope, str) for scope in data["scopes"])
-        ):
-            raise ProtocolError("Неполный ответ OAuth validate")
-        if data.get("client_id") != self.config.client_id:
+        if data.client_id != self.config.client_id:
             raise AuthRequiredError(
                 "Токен выпущен для другого Client ID; нужна повторная авторизация"
             )
-        if data.get("user_id") != expected_user:
+        if data.user_id != expected_user:
             raise AuthRequiredError(f"Токен не принадлежит ожидаемому Twitch ID {expected_user}")
-        if not isinstance(data.get("expires_in"), int) or data["expires_in"] < 0:
+        if data.expires_in < 0:
             raise ProtocolError("OAuth validate не вернул корректный expires_in")
         return data
 
@@ -125,15 +120,15 @@ class Tokens:
             if exc.status != HTTPStatus.UNAUTHORIZED:
                 raise
             return None
-        if data["expires_in"] <= REFRESH_MARGIN_SECONDS:
+        if data.expires_in <= REFRESH_MARGIN_SECONDS:
             return None
         token = Token(
             user_id,
-            data.get("login", ""),
-            frozenset(data["scopes"]),
+            data.login,
+            frozenset(data.scopes),
             *pair,
             now,
-            now + data["expires_in"],
+            now + data.expires_in,
         )
         self._cache[user_id] = token
         self._blocked.pop(user_id, None)
@@ -151,6 +146,7 @@ class Tokens:
                     "grant_type": "refresh_token",
                     "refresh_token": pair[1],
                 },
+                model=OAuthTokens,
             )
         except RemoteError as exc:
             if exc.status not in {400, 401, 403}:
@@ -164,12 +160,9 @@ class Tokens:
             )
             self._blocked[user_id] = (pair, reason)
             raise AuthRequiredError(reason) from None
-        if not isinstance(refreshed, dict) or not all(
-            isinstance(refreshed.get(k), str) and refreshed[k]
-            for k in ("access_token", "refresh_token")
-        ):
+        if not refreshed.access_token or not refreshed.refresh_token:
             raise ProtocolError("OAuth refresh не вернул пару access_token/refresh_token")
-        new = (refreshed["access_token"], refreshed["refresh_token"])
+        new = (refreshed.access_token, refreshed.refresh_token)
         REDACT.add(*new)
         # Persist rotation before another network request or process shutdown.
         saved = await self.store.save_token(user_id, *new, expected=pair)
