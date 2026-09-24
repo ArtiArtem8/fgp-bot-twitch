@@ -19,6 +19,7 @@ from fgpbot.wire import Subscription, eventsub
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from fgpbot.storage import ProbeRow, TokenRow
     from fgpbot.wire import Frame
 
 type Payload = dict[str, Any]
@@ -197,13 +198,13 @@ class StoreCase(unittest.IsolatedAsyncioTestCase):
         await self.store.initialize()
         self.state = Health(self.config.bot_id, self.config.channel_id)
 
-    async def token_row(self, user_id: str) -> Payload:
+    async def token_row(self, user_id: str) -> TokenRow:
         row = await self.store.token(user_id)
         if row is None:
             raise AssertionError(f"Expected stored token for {user_id}")
         return row
 
-    async def probe_row(self, nonce: str) -> Payload:
+    async def probe_row(self, nonce: str) -> ProbeRow:
         row = await self.store.probe(nonce)
         if row is None:
             raise AssertionError(f"Expected stored probe for {nonce}")

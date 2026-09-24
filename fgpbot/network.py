@@ -101,11 +101,28 @@ class Http:
 
     @overload
     async def request[T](
-        self, method: str, url: str, *, model: type[T], **kwargs: object
+        self,
+        method: str,
+        url: str,
+        *,
+        model: type[T],
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+        data: Mapping[str, str] | None = None,
     ) -> T: ...
 
     @overload
-    async def request(self, method: str, url: str, **kwargs: object) -> object: ...
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+        data: Mapping[str, str] | None = None,
+    ) -> object: ...
 
     async def request(  # ruff: ignore[too-many-arguments] - transport options mirror aiohttp
         self,

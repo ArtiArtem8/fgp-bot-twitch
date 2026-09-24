@@ -36,8 +36,8 @@ class Authorization:
     ) -> None:
         self.config, self.store, self.http = config, store, http
         self.expected_user = config.bot_id if account == "bot" else config.channel_id
-        self.scopes = (
-            CHAT_SCOPES | (FOLLOW_SCOPE if followers else frozenset())
+        self.scopes: frozenset[str] = (
+            CHAT_SCOPES | (FOLLOW_SCOPE if followers else frozenset[str]())
             if account == "bot"
             else FOLLOW_SCOPE
         )

@@ -10,6 +10,8 @@ from .network import ProtocolError, RemoteError
 from .wire import SendChat, Subscriptions, Users
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .config import Config
     from .network import Http
     from .tokens import Tokens
@@ -38,12 +40,18 @@ class Twitch:
 
     @overload
     async def request[T](
-        self, method: str, path: str, *, model: type[T], **kwargs: object
+        self,
+        method: str,
+        path: str,
+        *,
+        user_id: str | None = None,
+        scopes: frozenset[str] = frozenset(),
+        model: type[T],
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
     ) -> T: ...
 
     @overload
-    async def request(self, method: str, path: str, **kwargs: object) -> object: ...
-
     async def request(
         self,
         method: str,
@@ -51,8 +59,20 @@ class Twitch:
         *,
         user_id: str | None = None,
         scopes: frozenset[str] = frozenset(),
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+    ) -> object: ...
+
+    async def request(  # ruff: ignore[too-many-arguments] - typed API options are explicit
+        self,
+        method: str,
+        path: str,
+        *,
+        user_id: str | None = None,
+        scopes: frozenset[str] = frozenset(),
         model: type[object] = object,
-        **kwargs: object,
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
     ) -> object:
         user_id = user_id or self.config.bot_id
         for attempt in range(2):
@@ -66,7 +86,8 @@ class Twitch:
                         "Authorization": f"Bearer {token.access}",
                     },
                     model=model,
-                    **kwargs,
+                    params=params,
+                    json=json,
                 )
             except RemoteError as exc:
                 if exc.status != HTTPStatus.UNAUTHORIZED or attempt:

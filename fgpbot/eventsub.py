@@ -235,7 +235,7 @@ class EventSub:
             connection.read = asyncio.create_task(
                 self._receive(connection.ws, self.state.keepalive_timeout + 5)
             )
-        tasks = {connection.read, connection.reset}
+        tasks: set[asyncio.Task[object]] = {connection.read, connection.reset}
         if connection.handoff:
             tasks.add(connection.handoff)
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -297,13 +297,13 @@ class EventSub:
 
     @staticmethod
     async def _close(connection: _Connection) -> None:
+        tasks: list[asyncio.Task[object]] = []
         for task in (connection.read, connection.reset, connection.handoff):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in (connection.read, connection.reset, connection.handoff) if task),
-            return_exceptions=True,
-        )
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                tasks.append(task)
+        await asyncio.gather(*tasks, return_exceptions=True)
         # If handoff finished simultaneously with cancellation, close its socket too.
         if connection.handoff and connection.handoff.done() and not connection.handoff.cancelled():
             with contextlib.suppress(Exception):

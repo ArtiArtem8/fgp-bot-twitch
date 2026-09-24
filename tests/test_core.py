@@ -14,7 +14,13 @@ from unittest.mock import patch
 import msgspec
 
 from fgpbot import cli
-from fgpbot.commands import format_queue, format_time_russian, parse_command, russian_word
+from fgpbot.commands import (
+    MusicTrack,
+    format_queue,
+    format_time_russian,
+    parse_command,
+    russian_word,
+)
 from fgpbot.config import ConfigError, load_config
 from fgpbot.health import Health, SingleInstance, atomic_json, read_status, status_writer
 from fgpbot.security import REDACT, Redactor, SafeFormatter
@@ -105,7 +111,7 @@ class PureCommandTests(unittest.TestCase):
         self.assertEqual(format_time_russian(3661, 3), "1 час, 1 минуту и 1 секунду")
 
     def test_queue_output_bounded_and_empty(self) -> None:
-        value = format_queue([{"title": "a" * 1000} for _ in range(100)])
+        value = format_queue([MusicTrack(title="a" * 1000) for _ in range(100)])
         self.assertLessEqual(len(value), 500)
         self.assertIn("ещё", value)
         self.assertIn("пуста", format_queue([]))

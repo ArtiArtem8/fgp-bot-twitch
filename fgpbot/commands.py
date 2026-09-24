@@ -8,7 +8,9 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+import msgspec
 
 from .config import FOLLOW_SCOPE
 from .network import NetworkError, ProtocolError, RemoteError
@@ -47,7 +49,7 @@ def russian_word(n: int, one: str, few: str, many: str) -> str:
 def format_time_russian(seconds: int, depth: int = 2) -> str:
     """Render a duration with up to the requested number of units."""
     seconds = max(0, int(seconds))
-    parts = []
+    parts: list[str] = []
     for size, words in (
         (31536000, ("год", "года", "лет")),
         (86400, ("день", "дня", "дней")),
@@ -84,16 +86,24 @@ class Chat:
     text: str
 
 
+class MusicTrack(msgspec.Struct, frozen=True):
+    """Fields the music commands use from a Trula queue item."""
+
+    title: str | None = None
+    duration: str | int | float | None = None
+    is_watched: bool | int | str | None = False
+
+
 class Music:
     """Read and briefly cache the optional music queue."""
 
     def __init__(self, http: Http, token: str) -> None:
         self.http, self.token = http, token
-        self._cached: list[dict[str, Any]] = []
+        self._cached: list[MusicTrack] = []
         self._until = 0.0
         self._lock = asyncio.Lock()
 
-    async def queue(self) -> list[dict[str, Any]]:
+    async def queue(self) -> list[MusicTrack]:
         if not self.token:
             raise ValueError("Музыкальный сервис не настроен: отсутствует TRULA_MUSIC_TOKEN")
         async with self._lock:
@@ -103,29 +113,29 @@ class Music:
                 "GET",
                 "https://trula-music.ru/obs/orders/",
                 params={"token": self.token},
-                model=list[dict[str, Any]],
+                model=list[MusicTrack],
             )
-            if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+            if not isinstance(data, list) or any(not isinstance(row, MusicTrack) for row in data):
                 raise ProtocolError("Музыкальный сервис вернул не список треков")
-            result = []
+            result: list[MusicTrack] = []
             for track in data:
-                watched = track.get("is_watched", False)
-                if watched in (True, 1, "true", "True", "1"):  # ruff: ignore[literal-membership] - JSON may be unhashable
+                watched = track.is_watched
+                if watched in {True, "true", "True", "1"}:
                     continue
-                if watched not in (False, 0, "false", "False", "0", None):  # ruff: ignore[literal-membership] - JSON may be unhashable
+                if watched not in {False, "false", "False", "0", None}:
                     raise ProtocolError("Музыкальный сервис: непонятное значение is_watched")
                 result.append(track)
             self._cached, self._until = result, time.monotonic() + 5
             return list(result)
 
 
-def format_queue(tracks: list[dict[str, Any]]) -> str:
+def format_queue(tracks: list[MusicTrack]) -> str:
     """Summarize the music queue within chat message limits."""
     if not tracks:
         return "Музыкальная очередь пуста"
     parts: list[str] = []
     for index, track in enumerate(tracks[:10], 1):
-        title = chat_text(str(track.get("title") or "Неизвестный трек"), 90)
+        title = chat_text(str(track.title or "Неизвестный трек"), 90)
         part = f"{index}. {'▶' if index == 1 else '⏭'} {title}"
         if len(" | ".join([*parts, part])) > MAX_QUEUE_TEXT_LENGTH:
             break
@@ -358,7 +368,7 @@ class Commands:
                     raise
         return None
 
-    async def _music(self, chat: Chat) -> list[dict[str, Any]] | None:
+    async def _music(self, chat: Chat) -> list[MusicTrack] | None:
         try:
             tracks = await self.music.queue()
             self.state.features["music"] = "READY"
@@ -384,10 +394,7 @@ class Commands:
         track = tracks[0]
         await self.reply(
             chat,
-            (
-                f"Сейчас играет: {track.get('title') or 'Неизвестный трек'} "
-                f"({track.get('duration') or '??:??'})"
-            ),
+            (f"Сейчас играет: {track.title or 'Неизвестный трек'} ({track.duration or '??:??'})"),
         )
 
     async def queue(self, chat: Chat, _: str) -> None:

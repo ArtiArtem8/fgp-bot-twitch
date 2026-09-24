@@ -56,7 +56,7 @@ class CLITests(unittest.TestCase):
     def test_selftest_without_tests_does_not_report_success(self) -> None:
         with (
             patch.object(
-                cli.unittest.defaultTestLoader, "discover", return_value=unittest.TestSuite()
+                unittest.defaultTestLoader, "discover", return_value=unittest.TestSuite()
             ),
             patch("sys.stderr", io.StringIO()),
         ):
