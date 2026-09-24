@@ -49,6 +49,15 @@ http://localhost:4343/oauth/callback
 Запущенный бот не открывает локальный HTTP-порт. Callback-порт открывается только
 командой `auth`, только на loopback и максимум на время авторизации.
 
+## Linux
+
+Основной пользовательский launcher пока Windows-first, но Python runtime не привязан к
+Windows. GitHub Actions запускает типизацию и полный автоматический test suite как на
+Windows, так и на Ubuntu. На Linux зависимости можно установить через
+`uv sync --locked --no-dev`, а бот запустить командой `uv run python main.py run`.
+OAuth callback, EventSub и SQLite используют кроссплатформенный Python-код; отдельный
+Linux service/launcher в проект пока не входит.
+
 ## Проверка без открытия Twitch
 
 ### Тихая проверка состояния

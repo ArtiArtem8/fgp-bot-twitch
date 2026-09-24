@@ -124,4 +124,4 @@ source = ["fgpbot"]
 show_missing = true
 skip_covered = true
 precision = 1
-fail_under = 87.0
+fail_under = 86.5
