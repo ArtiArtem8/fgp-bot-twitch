@@ -21,7 +21,7 @@ EventSub WebSocket, отвечает через Twitch Send Chat Message API, х
 ```
 
 `setup.bat` выполняет `uv sync --locked --no-dev`: устанавливает зафиксированные в
-`uv.lock` runtime-зависимости (`aiohttp`, `python-dotenv`) в `.venv`.
+`uv.lock` runtime-зависимости (`aiohttp`, `msgspec`, `python-dotenv`) в `.venv`.
 Поддерживается Python **3.14.x**. Установка требует `uv` в PATH.
 Обычный запуск **не обновляет зависимости и не запускает установку**.
 

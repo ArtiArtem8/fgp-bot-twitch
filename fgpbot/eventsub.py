@@ -194,7 +194,7 @@ class EventSub:
             return
         if not isinstance(payload, NotificationPayload):
             return  # Unknown subscription type; other kinds are handled by the caller.
-        self._event(frame)
+        self._event(frame, payload)
 
     def _revocation(self, payload: RevocationPayload) -> None:
         sub = payload.subscription
@@ -205,10 +205,7 @@ class EventSub:
             raise TransportError(f"Подписка на чат отозвана: {sub.status}")
         self.state.features["greeting"] = "REVOKED"
 
-    def _event(self, frame: Frame) -> None:
-        payload = frame.payload
-        if not isinstance(payload, NotificationPayload):
-            raise ProtocolError("EventSub notification без payload")
+    def _event(self, frame: Frame, payload: NotificationPayload) -> None:
         sub, event = payload.subscription, payload.event
         if event.broadcaster_user_id != self.config.channel_id:
             self.state.filtered_events += 1
