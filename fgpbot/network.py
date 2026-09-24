@@ -1,7 +1,5 @@
 """Make bounded HTTP requests with explicit retry behavior."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from http import HTTPStatus

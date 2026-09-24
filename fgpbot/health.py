@@ -1,7 +1,5 @@
 """Track readiness and persist a redacted local status snapshot."""
 
-from __future__ import annotations
-
 import asyncio
 import json
 import math

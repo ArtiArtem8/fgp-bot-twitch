@@ -1,7 +1,5 @@
 """Validate and refresh OAuth tokens without losing rotations."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import time

@@ -1,7 +1,5 @@
 """Parse chat commands and produce bounded replies."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import re

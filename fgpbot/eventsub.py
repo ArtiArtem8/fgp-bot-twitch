@@ -1,7 +1,5 @@
 """Receive and validate Twitch EventSub WebSocket messages."""
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import logging

@@ -1,7 +1,5 @@
 """Call Twitch APIs for users, subscriptions, and chat delivery."""
 
-from __future__ import annotations
-
 import asyncio
 import time
 from http import HTTPStatus

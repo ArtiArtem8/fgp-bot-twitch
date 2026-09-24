@@ -1,7 +1,5 @@
 """Verify failures at the Twitch JSON boundary, including future fields."""
 
-from __future__ import annotations
-
 import unittest
 
 import msgspec

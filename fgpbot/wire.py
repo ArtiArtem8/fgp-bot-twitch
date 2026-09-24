@@ -1,7 +1,5 @@
 """The small subset of Twitch JSON that this bot actually consumes."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import msgspec

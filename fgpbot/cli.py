@@ -1,7 +1,5 @@
 """Expose local bot setup, status, and diagnostic commands."""
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import importlib.metadata

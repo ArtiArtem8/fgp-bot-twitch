@@ -1,7 +1,5 @@
 """Coordinate chat processing, health audits, and end-to-end probes."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import time
