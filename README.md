@@ -20,10 +20,14 @@ EventSub WebSocket, отвечает через Twitch Send Chat Message API, х
 .\runtwitchbot.bat
 ```
 
-`setup.bat` устанавливает две прямые зависимости (`aiohttp`, `python-dotenv`) в
-`.venv`: через установленный `uv`, либо через Python/pip. Поддерживаемый диапазон
-Python — **3.12–3.14**. Установка зависимостей требует доступа к индексу пакетов.
+`setup.bat` выполняет `uv sync --locked --no-dev`: устанавливает зафиксированные в
+`uv.lock` runtime-зависимости (`aiohttp`, `python-dotenv`) в `.venv`.
+Поддерживаемый диапазон Python — **3.12–3.14**. Установка требует `uv` в PATH.
 Обычный запуск **не обновляет зависимости и не запускает установку**.
+
+Для разработки выполните `uv sync --locked`, затем `prek install --hook-type pre-commit
+--hook-type pre-push`. Команды проверки и безопасного исправления доступны через
+`just --list`, `just check` и `just ci`.
 
 `selftest.bat` использует временные базы и локальные HTTP/WebSocket-серверы.
 Настоящий Twitch, свои `.env` и `data/tokens.db` для тестов не используются.

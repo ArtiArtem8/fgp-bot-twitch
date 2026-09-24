@@ -4,16 +4,93 @@ version = "2.0.0"
 description = "Local single-channel Twitch bot with explicit readiness and end-to-end checks"
 requires-python = ">=3.12,<3.15"
 dependencies = [
-  "aiohttp>=3.13.3,<4",
-  "python-dotenv>=1.2.2,<2",
+    "aiohttp>=3.13.3,<4",
+    "python-dotenv>=1.2.2,<2",
 ]
 
 [tool.uv]
 package = false
+required-version = ">=0.11.18,<0.12"
+
+[dependency-groups]
+dev = [
+    "coverage[toml]",
+    "deptry",
+    "ruff",
+    "tach",
+    "ty",
+]
 
 [tool.ruff]
 target-version = "py312"
-line-length = 110
+line-length = 99
+preview = true
+force-exclude = true
+respect-gitignore = true
+show-fixes = true
+unsafe-fixes = false
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "UP", "B", "ASYNC"]
+select = ["ALL"]
+# Ruff's formatter conflicts with these rules; D203 also conflicts with D211.
+ignore = [
+    "W191", "E111", "E114", "E117", "D203", "D206", "D300",
+    "D213", "Q000", "Q001", "Q002", "Q003", "Q004", "COM812", "COM819",
+]
+
+[tool.ruff.lint.flake8-type-checking]
+strict = true
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.pylint]
+max-args = 6
+max-positional-args = 4
+max-branches = 10
+max-returns = 5
+max-statements = 40
+max-locals = 12
+max-nested-blocks = 4
+max-bool-expr = 4
+
+[tool.ty.src]
+include = ["fgpbot", "tests", "main.py"]
+
+[tool.ty.environment]
+python-version = "3.12"
+python-platform = "win32"
+
+[tool.ty.rules]
+blanket-ignore-comment = "error"
+dynamic-function-decorator-return = "error"
+missing-type-argument = "error"
+possibly-unresolved-reference = "warn"
+unsound-assignment = "error"
+unsound-return-statement = "error"
+unsound-yield = "error"
+unsupported-dynamic-base = "warn"
+division-by-zero = "warn"
+possibly-missing-attribute = "warn"
+possibly-missing-import = "warn"
+
+[tool.ty.analysis]
+strict-equality-semantics = true
+strict-generic-narrowing = true
+respect-type-ignore-comments = false
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.deptry]
+known_first_party = ["fgpbot", "tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["fgpbot"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+precision = 1
+fail_under = 85.0

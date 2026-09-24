@@ -1,0 +1,54 @@
+source_roots = ["."]
+exclude = ["tests/"]
+root_module = "ignore"
+forbid_circular_dependencies = true
+ignore_type_checking_imports = false
+
+[[modules]]
+path = "fgpbot"
+depends_on = []
+
+[[modules]]
+path = "fgpbot.app"
+depends_on = ["fgpbot.twitch", "fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.eventsub", "fgpbot.commands", "fgpbot.health", "fgpbot.config"]
+
+[[modules]]
+path = "fgpbot.auth"
+depends_on = ["fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.config"]
+
+[[modules]]
+path = "fgpbot.cli"
+depends_on = ["fgpbot.tokens", "fgpbot.config", "fgpbot.storage", "fgpbot.app", "fgpbot.twitch", "fgpbot.auth", "fgpbot.network", "fgpbot.health", "fgpbot.security"]
+
+[[modules]]
+path = "fgpbot.commands"
+depends_on = ["fgpbot.config", "fgpbot.network", "fgpbot.storage", "fgpbot.security", "fgpbot.health", "fgpbot.twitch", "fgpbot.tokens"]
+
+[[modules]]
+path = "fgpbot.config"
+
+[[modules]]
+path = "fgpbot.eventsub"
+depends_on = ["fgpbot.twitch", "fgpbot.config", "fgpbot.tokens", "fgpbot.health", "fgpbot.network"]
+
+[[modules]]
+path = "fgpbot.health"
+depends_on = ["fgpbot", "fgpbot.security"]
+
+[[modules]]
+path = "fgpbot.network"
+depends_on = ["fgpbot.security"]
+
+[[modules]]
+path = "fgpbot.security"
+
+[[modules]]
+path = "fgpbot.storage"
+
+[[modules]]
+path = "fgpbot.tokens"
+depends_on = ["fgpbot.storage", "fgpbot.config", "fgpbot.network", "fgpbot.security"]
+
+[[modules]]
+path = "fgpbot.twitch"
+depends_on = ["fgpbot.network", "fgpbot.config", "fgpbot.tokens"]
