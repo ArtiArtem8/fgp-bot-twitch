@@ -34,9 +34,43 @@ unsafe-fixes = false
 select = ["ALL"]
 # Ruff's formatter conflicts with these rules; D203 also conflicts with D211.
 ignore = [
-    "W191", "E111", "E114", "E117", "D203", "D206", "D300",
-    "D213", "Q000", "Q001", "Q002", "Q003", "Q004", "COM812", "COM819",
+    "tab-indentation", "indentation-with-invalid-multiple", "indentation-with-invalid-multiple-comment", "over-indented", "incorrect-blank-line-before-class", "docstring-tab-indentation", "triple-single-quotes",
+    "multi-line-summary-second-line", "bad-quotes-inline-string", "bad-quotes-multiline-string", "bad-quotes-docstring", "avoidable-escaped-quote", "unnecessary-escaped-quote", "missing-trailing-comma", "prohibited-trailing-comma",
+    # The MIT LICENSE applies to the repository; per-file notices duplicate it.
+    "missing-copyright-notice",
+    # This is an application, not a public library. Method names and class-level
+    # contracts are clearer than mandatory one-line restatements for each method.
+    "undocumented-public-method", "undocumented-public-init", "undocumented-magic-method",
+    # Localized error text is intentionally written at the raise site; moving
+    # each message into a one-use variable or exception class adds boilerplate.
+    "raw-string-in-exception", "f-string-in-exception", "raise-vanilla-args",
+    # Annotations state return types; high-level docstrings explain behavior,
+    # without repeating every return and raised branch in Sphinx sections.
+    "docstring-missing-returns", "docstring-missing-exception",
+    # Some try blocks deliberately catch locally raised protocol/sentinel errors
+    # to normalize failures or guarantee cleanup; helper extraction adds no safety.
+    "raise-within-try",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# unittest cases are named executable specifications, not pytest tests or public APIs.
+"tests/**/*.py" = ["pytest-unittest-assertion", "pytest-composite-assertion", "pytest-unittest-raises-assertion", "undocumented-public-module", "undocumented-public-class", "undocumented-public-function", "assert", "private-member-access", "magic-value-comparison"]
+# These modules intentionally print user-facing Russian text in the console.
+"fgpbot/auth.py" = ["print", "ambiguous-unicode-character-string"]
+"fgpbot/cli.py" = ["print", "ambiguous-unicode-character-string"]
+"fgpbot/commands.py" = ["ambiguous-unicode-character-string"]
+"fgpbot/config.py" = ["ambiguous-unicode-character-string"]
+"fgpbot/tokens.py" = ["ambiguous-unicode-character-string"]
+"fgpbot/health.py" = ["import-outside-top-level"] # msvcrt/fcntl exist on different OSes.
+# aiohttp/WebSocket and decoded JSON are dynamic external API boundaries.
+"fgpbot/eventsub.py" = ["any-type"]
+"fgpbot/network.py" = ["any-type"]
+"fgpbot/twitch.py" = ["any-type"]
+# The notification fixture exposes independent wire fields; grouping them
+# would make individual protocol scenarios harder to read.
+"tests/helpers.py" = ["too-many-arguments"]
+# This fake HTTP endpoint intentionally returns each protocol case directly.
+"tests/test_integration.py" = ["too-many-return-statements"]
 
 [tool.ruff.lint.flake8-type-checking]
 strict = true
