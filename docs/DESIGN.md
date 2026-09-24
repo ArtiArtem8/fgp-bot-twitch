@@ -46,32 +46,12 @@ Twitch HTTP     → aiohttp HTTP → msgspec validation → typed wire objects
 Twitch EventSub → aiohttp WS   → msgspec envelope/payload → app queue → Commands
 ```
 
-### Проверка отдельного WebSocket-клиента (Stage 3C)
+### Выбор WebSocket-клиента
 
-Проверен современный `websockets.asyncio.client` версии 17.1 в изолированном
-прототипе, без добавления зависимости. Клиент получил `session_welcome` от Twitch
-через настроенный локальный HTTP proxy/Hiddify. Локальный прототип выполнил
-`session_reconnect`: держал старое соединение открытым до welcome нового, затем
-закрыл старое; подписка создавалась один раз. Для протокола Twitch это отдельная
-операция: библиотечный автоматический reconnect не заменяет handoff с переносом
-подписок. Ping/Pong WebSocket и EventSub `session_keepalive` также остаются разными
-механизмами; в прототипе клиентские ping были отключены, ответы на серверные ping
-оставались за библиотекой.
-
-| Критерий | aiohttp сейчас | websockets в прототипе |
-| --- | --- | --- |
-| Полный `eventsub.py` | 373 строки, 58 ветвлений | Полный перенос не выполнялся; краткий connector не доказал общего сокращения |
-| Состояние handoff | 4 поля `_Connection` | Те же 4 поля необходимы |
-| `Any` / casts в EventSub | 0 / 0 | 0 / 0; уменьшить уже нечего |
-| Тестовые transport mocks | `FakeSocket`, patch `ws_connect` | `FakeSocket` с `recv`, patch `connect`; уровень обвязки сопоставим |
-| Proxy | Явный `config.proxy` | Явный `proxy=config.proxy`; Hiddify проверен |
-| Shutdown | Проверен интеграционными тестами | Локальное закрытие проверено, полный набор интеграционных тестов не переносился |
-
-`websockets` отклонён: ожидаемого упрощения жизненного цикла и уменьшения `Any`
-нет, а новая runtime-зависимость и полная миграция reconnect-тестов добавили бы
-риск без доказанного выигрыша. HTTP, OAuth callback и EventSub WebSocket остаются
-на aiohttp. Решение соответствует [Twitch EventSub WebSocket flow](https://dev.twitch.tv/docs/eventsub/handling-websocket-events)
-и [документации клиента websockets](https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html).
+HTTP, OAuth callback и EventSub WebSocket используют одну `aiohttp`-сессию.
+Отдельный клиент `websockets` не упрощает Twitch handoff: старый сокет всё равно
+нужно читать до welcome нового, а подписку переносить без повторного создания.
+Дополнительная runtime-зависимость здесь не даёт подтверждённого выигрыша.
 
 Это явная композиция объектов в точке запуска, не DI-фреймворк. Небольшое количество
 объектов позволяет заменить сетевую границу имитатором, не переписывая бизнес-логику.
