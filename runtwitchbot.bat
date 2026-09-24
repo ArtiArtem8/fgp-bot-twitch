@@ -6,7 +6,7 @@ if not exist ".venv\Scripts\python.exe" (
     echo ERROR: Run setup.bat first. Virtual environment is missing.
     exit /b 2
 )
-".venv\Scripts\python.exe" -c "import aiohttp, dotenv; import fgpbot.cli" >nul 2>nul
+".venv\Scripts\python.exe" -c "import aiohttp, dotenv, msgspec; import fgpbot.cli" >nul 2>nul
 if errorlevel 1 (
     echo ERROR: Python dependencies or source files are incomplete. Run setup.bat and selftest.bat.
     exit /b 2

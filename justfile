@@ -36,7 +36,7 @@ cov:
     uv run --locked coverage erase
     uv run --locked coverage run -m unittest discover -s tests -t . -v
     uv run --locked coverage report
-    uv run --locked coverage json -o - | uv run --locked python -c "import json,sys; v=json.load(sys.stdin)['totals']['percent_branches_covered']; print('Branch coverage: %.1f%% (minimum 75.0%%)' % v); sys.exit(v < 75.0)"
+    uv run --locked coverage json -o - | uv run --locked python -c "import json,sys; v=json.load(sys.stdin)['totals']['percent_branches_covered']; print('Branch coverage: %.1f%% (minimum 76.0%%)' % v); sys.exit(v < 76.0)"
 
 audit:
     uv audit --frozen

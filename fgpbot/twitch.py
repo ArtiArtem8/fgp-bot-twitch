@@ -1,19 +1,21 @@
 """Call Twitch APIs for users, subscriptions, and chat delivery."""
 
-from __future__ import annotations
-
 import asyncio
 import time
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, overload
 
 from .config import CHAT_SCOPES
 from .network import ProtocolError, RemoteError
+from .wire import SendChat, Subscriptions, Users
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .config import Config
     from .network import Http
     from .tokens import Tokens
+    from .wire import Subscription, User
 
 HELIX = "https://api.twitch.tv/helix"
 
@@ -36,6 +38,20 @@ class Twitch:
         self._send_lock = asyncio.Lock()
         self._next_send = 0.0
 
+    @overload
+    async def request[T](
+        self,
+        method: str,
+        path: str,
+        *,
+        user_id: str | None = None,
+        scopes: frozenset[str] = frozenset(),
+        model: type[T],
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+    ) -> T: ...
+
+    @overload
     async def request(
         self,
         method: str,
@@ -43,8 +59,21 @@ class Twitch:
         *,
         user_id: str | None = None,
         scopes: frozenset[str] = frozenset(),
-        **kwargs: Any,
-    ) -> Any:
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+    ) -> object: ...
+
+    async def request(  # ruff: ignore[too-many-arguments] - typed API options are explicit
+        self,
+        method: str,
+        path: str,
+        *,
+        user_id: str | None = None,
+        scopes: frozenset[str] = frozenset(),
+        model: type[object] = object,
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+    ) -> object:
         user_id = user_id or self.config.bot_id
         for attempt in range(2):
             token = await self.tokens.get(user_id, scopes)
@@ -56,7 +85,9 @@ class Twitch:
                         "Client-Id": self.config.client_id,
                         "Authorization": f"Bearer {token.access}",
                     },
-                    **kwargs,
+                    model=model,
+                    params=params,
+                    json=json,
                 )
             except RemoteError as exc:
                 if exc.status != HTTPStatus.UNAUTHORIZED or attempt:
@@ -66,29 +97,21 @@ class Twitch:
                 self.tokens.invalidate(user_id, token.access)
         raise AssertionError("unreachable")
 
-    async def users(
-        self, *, ids: list[str] | None = None, login: str = ""
-    ) -> list[dict[str, Any]]:
+    async def users(self, *, ids: list[str] | None = None, login: str = "") -> list[User]:
         params = [("id", value) for value in ids] if ids else [("login", login)]
-        result = await self.request("GET", "/users", params=params)
-        if (
-            not isinstance(result, dict)
-            or not isinstance(result.get("data"), list)
-            or not all(isinstance(user, dict) for user in result["data"])
-        ):
-            raise ProtocolError("Get Users: нет массива data")
-        return result["data"]
+        result = await self.request("GET", "/users", params=params, model=Users)
+        return result.data
 
-    async def subscriptions(self) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
+    async def subscriptions(self) -> list[Subscription]:
+        result: list[Subscription] = []
         params: dict[str, str] = {}
         cursors: set[str] = set()
         for _ in range(100):
-            page = await self.request("GET", "/eventsub/subscriptions", params=params)
-            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
-                raise ProtocolError("EventSub subscriptions: нет массива data")
-            result.extend(page["data"])
-            cursor = page.get("pagination", {}).get("cursor")
+            page = await self.request(
+                "GET", "/eventsub/subscriptions", params=params, model=Subscriptions
+            )
+            result.extend(page.data)
+            cursor = page.pagination.cursor
             if not cursor:
                 return result
             if cursor in cursors:
@@ -97,23 +120,20 @@ class Twitch:
             params["after"] = cursor
         raise ProtocolError("Слишком много страниц EventSub subscriptions")
 
-    def matches(self, sub: dict[str, Any] | None, session_id: str, kind: str) -> bool:
-        if not isinstance(sub, dict):
-            return False
-        condition, transport = sub.get("condition"), sub.get("transport")
-        if not isinstance(condition, dict) or not isinstance(transport, dict):
+    def matches(self, sub: Subscription | None, session_id: str, kind: str) -> bool:
+        if sub is None:
             return False
         return bool(
-            sub.get("type") == kind
-            and sub.get("version") == "1"
-            and sub.get("status") == "enabled"
-            and condition.get("broadcaster_user_id") == self.config.channel_id
-            and (kind != "channel.chat.message" or condition.get("user_id") == self.config.bot_id)
-            and sub.get("transport", {}).get("method") == "websocket"
-            and sub.get("transport", {}).get("session_id") == session_id
+            sub.type == kind
+            and sub.version == "1"
+            and sub.status == "enabled"
+            and sub.condition.broadcaster_user_id == self.config.channel_id
+            and (kind != "channel.chat.message" or sub.condition.user_id == self.config.bot_id)
+            and sub.transport.method == "websocket"
+            and sub.transport.session_id == session_id
         )
 
-    async def subscribe(self, session_id: str, kind: str) -> dict[str, Any]:
+    async def subscribe(self, session_id: str, kind: str) -> Subscription:
         condition = {"broadcaster_user_id": self.config.channel_id}
         if kind == "channel.chat.message":
             condition["user_id"] = self.config.bot_id
@@ -128,16 +148,15 @@ class Twitch:
                     "condition": condition,
                     "transport": {"method": "websocket", "session_id": session_id},
                 },
+                model=Subscriptions,
             )
-            if not isinstance(result, dict) or not isinstance(result.get("data"), list):
-                raise ProtocolError("Create EventSub Subscription: нет массива data")
-            candidates = result["data"]
+            candidates = result.data
         except RemoteError as exc:
             if exc.status != HTTPStatus.CONFLICT:
                 raise
             candidates = await self.subscriptions()
         for sub in candidates:
-            if self.matches(sub, session_id, kind) and sub.get("id"):
+            if self.matches(sub, session_id, kind) and sub.id:
                 return sub
         raise ProtocolError(f"Нет подтверждённой подписки {kind} для текущего WebSocket")
 
@@ -161,21 +180,22 @@ class Twitch:
             if reply_to:
                 body["reply_parent_message_id"] = reply_to
             result = await self.request(
-                "POST", "/chat/messages", scopes=frozenset({"user:write:chat"}), json=body
+                "POST",
+                "/chat/messages",
+                scopes=frozenset({"user:write:chat"}),
+                json=body,
+                model=SendChat,
             )
-            data = result.get("data", []) if isinstance(result, dict) else None
-            if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+            if len(result.data) != 1:
                 raise ProtocolError("Send Chat Message: неполный ответ")
-            message = data[0]
-            if message.get("is_sent") is not True:
-                reason = message.get("drop_reason") or {}
-                if not isinstance(reason, dict):
-                    reason = {"code": "unknown", "message": str(reason)}
+            message = result.data[0]
+            if not message.is_sent:
+                reason = message.drop_reason
                 raise DeliveryError(
                     "Twitch не отправил сообщение: "
-                    f"{reason.get('code', 'unknown')} {reason.get('message', '')}"
+                    f"{reason.code if reason else 'unknown'} {reason.message if reason else ''}"
                 )
-            message_id = message.get("message_id")
-            if not isinstance(message_id, str) or not message_id:
+            message_id = message.message_id
+            if not message_id:
                 raise ProtocolError("Twitch не вернул message_id отправленного сообщения")
             return message_id

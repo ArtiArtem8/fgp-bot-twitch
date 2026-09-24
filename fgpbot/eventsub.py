@@ -1,16 +1,13 @@
 """Receive and validate Twitch EventSub WebSocket messages."""
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
-import json
 import logging
 import random
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -18,6 +15,13 @@ import aiohttp
 from .config import CHAT_SCOPES
 from .network import NetworkError, ProtocolError, RemoteError
 from .tokens import AuthRequiredError
+from .wire import (
+    EmptyPayload,
+    NotificationPayload,
+    RevocationPayload,
+    SessionPayload,
+    eventsub,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +29,7 @@ if TYPE_CHECKING:
     from .config import Config
     from .health import Health
     from .twitch import Twitch
+    from .wire import Frame, Session
 
 LOG = logging.getLogger(__name__)
 WS_URL = "wss://eventsub.wss.twitch.tv/ws?keepalive_timeout_seconds=30"
@@ -58,10 +63,10 @@ class RecentIDs:
 
 @dataclass
 class _Connection:
-    ws: Any
+    ws: aiohttp.ClientWebSocketResponse
     reset: asyncio.Task[bool]
-    read: asyncio.Task[dict[str, Any]] | None = None
-    handoff: asyncio.Task[tuple[Any, dict[str, Any]]] | None = None
+    read: asyncio.Task[Frame] | None = None
+    handoff: asyncio.Task[tuple[aiohttp.ClientWebSocketResponse, Session]] | None = None
 
 
 def reconnect_url(value: object) -> str:
@@ -85,7 +90,7 @@ class EventSub:
     """Maintain the EventSub connection and subscription lifecycle."""
 
     def __init__(
-        self, config: Config, api: Twitch, state: Health, enqueue: Callable[[dict[str, Any]], None]
+        self, config: Config, api: Twitch, state: Health, enqueue: Callable[[Frame], None]
     ) -> None:
         self.config, self.api, self.state, self.enqueue = config, api, state, enqueue
         self._reset = asyncio.Event()
@@ -95,7 +100,7 @@ class EventSub:
         self.state.error(reason)
         self._reset.set()
 
-    async def _open(self, url: str) -> tuple[Any, dict[str, Any]]:
+    async def _open(self, url: str) -> tuple[aiohttp.ClientWebSocketResponse, Session]:
         ws = None
         try:
             # Timeout covers CONNECT, TLS, WS handshake AND the welcome frame.
@@ -117,49 +122,36 @@ class EventSub:
         return ws, session
 
     @staticmethod
-    def _validate_welcome(frame: dict[str, Any]) -> dict[str, Any]:
-        if frame.get("metadata", {}).get("message_type") != "session_welcome":
-            raise ProtocolError("Первый EventSub frame — не session_welcome")
-        session = frame["payload"].get("session")
-        if (
-            not isinstance(session, dict)
-            or not isinstance(session.get("id"), str)
-            or not session["id"]
+    def _validate_welcome(frame: Frame) -> Session:
+        if frame.metadata.message_type != "session_welcome" or not isinstance(
+            frame.payload, SessionPayload
         ):
+            raise ProtocolError("Первый EventSub frame — не session_welcome")
+        session = frame.payload.session
+        if not session.id:
             raise ProtocolError("EventSub welcome без session_id")
-        keepalive = session.get("keepalive_timeout_seconds")
+        keepalive = session.keepalive_timeout_seconds
         if keepalive is not None and (
-            not isinstance(keepalive, int)
-            or not MIN_KEEPALIVE_SECONDS <= keepalive <= MAX_KEEPALIVE_SECONDS
+            not MIN_KEEPALIVE_SECONDS <= keepalive <= MAX_KEEPALIVE_SECONDS
         ):
             raise ProtocolError("Некорректный EventSub keepalive timeout")
         return session
 
     @staticmethod
-    async def _receive(ws: Any, timeout: float) -> dict[str, Any]:  # ruff: ignore[async-function-with-timeout] - uses asyncio.timeout
+    async def _receive(ws: aiohttp.ClientWebSocketResponse, timeout: float) -> Frame:  # ruff: ignore[async-function-with-timeout] - uses asyncio.timeout
         async with asyncio.timeout(timeout):
             frame = await ws.receive()
         if frame.type != aiohttp.WSMsgType.TEXT:
             raise TransportError(
                 f"EventSub WebSocket закрыт: type={frame.type.name}, code={ws.close_code}"
             )
-        try:
-            data = json.loads(frame.data)
-            if (
-                not isinstance(data, dict)
-                or not isinstance(data.get("metadata"), dict)
-                or not isinstance(data.get("payload"), dict)
-            ):
-                raise TypeError
-        except (ValueError, TypeError):
-            raise ProtocolError("Некорректный JSON EventSub") from None
-        return data
+        return eventsub(frame.data)
 
-    def _welcome(self, session: dict[str, Any]) -> None:
-        self.state.session_id = session["id"]
+    def _welcome(self, session: Session) -> None:
+        self.state.session_id = session.id
         # Twitch may send null on a graceful reconnect; retain the previous timeout.
         self.state.keepalive_timeout = (
-            session.get("keepalive_timeout_seconds") or self.state.keepalive_timeout
+            session.keepalive_timeout_seconds or self.state.keepalive_timeout
         )
         self.state.ws_connected = True
         self.state.frame_received()
@@ -170,7 +162,7 @@ class EventSub:
         # First subscription must be created in the welcome subscription window.
         async with asyncio.timeout(9):
             chat = await self.api.subscribe(session_id, "channel.chat.message")
-        self.state.subscriptions["channel.chat.message"] = chat["id"]
+        self.state.subscriptions["channel.chat.message"] = chat.id
         if self.config.greet_stream:
             try:
                 online = await self.api.subscribe(session_id, "stream.online")
@@ -178,7 +170,7 @@ class EventSub:
                 self.state.features["greeting"] = "UNAVAILABLE"
                 LOG.warning("Приветствия недоступны, чат продолжает работать: %s", exc)
             else:
-                self.state.subscriptions["stream.online"] = online["id"]
+                self.state.subscriptions["stream.online"] = online.id
                 self.state.features["greeting"] = "READY"
         self.state.phase = "LISTENING"
         self.state.api_ok = True
@@ -191,58 +183,46 @@ class EventSub:
             session_id,
         )
 
-    def _notification(self, frame: dict[str, Any]) -> None:
-        payload, metadata = frame["payload"], frame["metadata"]
-        kind = metadata.get("message_type")
-        if kind == "session_keepalive":
+    def _notification(self, frame: Frame) -> None:
+        payload = frame.payload
+        if isinstance(payload, EmptyPayload):
             return
-        if kind == "revocation":
+        if isinstance(payload, RevocationPayload):
             self._revocation(payload)
             return
-        if kind != "notification":
-            raise ProtocolError(f"Неожиданный тип EventSub: {kind}")
-        self._event(frame)
+        if not isinstance(payload, NotificationPayload):
+            return  # Unknown subscription type; other kinds are handled by the caller.
+        self._event(frame, payload)
 
-    def _revocation(self, payload: dict[str, Any]) -> None:
-        sub = payload.get("subscription", {})
-        event_type = sub.get("type", "unknown")
+    def _revocation(self, payload: RevocationPayload) -> None:
+        sub = payload.subscription
+        event_type = sub.type
         self.state.subscriptions.pop(event_type, None)
-        LOG.error("EventSub revocation | type=%s | reason=%s", event_type, sub.get("status"))
+        LOG.error("EventSub revocation | type=%s | reason=%s", event_type, sub.status)
         if event_type == "channel.chat.message":
-            raise TransportError(f"Подписка на чат отозвана: {sub.get('status')}")
+            raise TransportError(f"Подписка на чат отозвана: {sub.status}")
         self.state.features["greeting"] = "REVOKED"
 
-    def _event(self, frame: dict[str, Any]) -> None:
-        payload, metadata = frame["payload"], frame["metadata"]
-        sub, event = payload.get("subscription", {}), payload.get("event", {})
-        if not isinstance(sub, dict) or not isinstance(sub.get("condition"), dict):
-            raise ProtocolError("EventSub notification без корректной subscription/condition")
-        if (
-            not isinstance(event, dict)
-            or event.get("broadcaster_user_id") != self.config.channel_id
-        ):
+    def _event(self, frame: Frame, payload: NotificationPayload) -> None:
+        sub, event = payload.subscription, payload.event
+        if event.broadcaster_user_id != self.config.channel_id:
             self.state.filtered_events += 1
             return
-        if sub.get("type") not in {"channel.chat.message", "stream.online"}:
-            return
-        if sub.get("condition", {}).get("broadcaster_user_id") != self.config.channel_id:
+        if sub.condition.broadcaster_user_id != self.config.channel_id:
             self.state.filtered_events += 1
             return
-        if (
-            sub.get("type") == "channel.chat.message"
-            and sub.get("condition", {}).get("user_id") != self.config.bot_id
-        ):
+        if sub.type == "channel.chat.message" and sub.condition.user_id != self.config.bot_id:
             self.state.filtered_events += 1
             return
-        event_id = metadata.get("message_id")
-        if not isinstance(event_id, str) or not event_id:
+        event_id = frame.metadata.message_id
+        if not event_id:
             raise ProtocolError("EventSub notification без message_id")
         if self._recent.seen(event_id):
             self.state.duplicate_events += 1
             return
         self.enqueue(frame)
 
-    async def _listen(self, ws: Any) -> None:
+    async def _listen(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         connection = _Connection(ws=ws, reset=asyncio.create_task(self._reset.wait()))
         try:
             while True:
@@ -255,7 +235,7 @@ class EventSub:
             connection.read = asyncio.create_task(
                 self._receive(connection.ws, self.state.keepalive_timeout + 5)
             )
-        tasks = {connection.read, connection.reset}
+        tasks: set[asyncio.Task[object]] = {connection.read, connection.reset}
         if connection.handoff:
             tasks.add(connection.handoff)
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -263,11 +243,13 @@ class EventSub:
             raise TransportError(self.state.last_error or "Запрошено переподключение")
         # Drain an already-received old-socket frame before swapping sockets.
         if connection.read in done:
-            await self._drain(connection, done)
-        if connection.handoff and connection.handoff in done:
+            handoff_ready = await self._drain(connection)
+        else:
+            handoff_ready = False
+        if connection.handoff and (connection.handoff in done or handoff_ready):
             await self._switch(connection)
 
-    async def _drain(self, connection: _Connection, done: set[asyncio.Task[Any]]) -> None:
+    async def _drain(self, connection: _Connection) -> bool:  # ruff: ignore[complex-structure] - Twitch handoff drains the old edge
         read = connection.read
         if read is None:
             raise RuntimeError("EventSub read task отсутствует")
@@ -278,18 +260,24 @@ class EventSub:
                 raise
             # The old edge can disappear while the new welcome is in flight.
             await connection.handoff
-            done.add(connection.handoff)
             frame = None
+            handoff_ready = True
+        else:
+            handoff_ready = False
         connection.read = None
         if frame is None:
-            return
+            return handoff_ready
         self.state.frame_received()
-        if frame["metadata"].get("message_type") != "session_reconnect":
+        if frame.metadata.message_type != "session_reconnect":
             self._notification(frame)
         elif connection.handoff is None:
-            url = reconnect_url(frame["payload"].get("session", {}).get("reconnect_url"))
+            payload = frame.payload
+            if not isinstance(payload, SessionPayload):
+                raise ProtocolError("EventSub reconnect без session")
+            url = reconnect_url(payload.session.reconnect_url)
             connection.handoff = asyncio.create_task(self._open(url), name="eventsub-handoff")
             LOG.info("EventSub handoff: старое соединение читается до welcome нового")
+        return handoff_ready
 
     async def _switch(self, connection: _Connection) -> None:
         handoff = connection.handoff
@@ -305,17 +293,17 @@ class EventSub:
         self._welcome(session)
         await old_ws.close()
         # Subscriptions transfer automatically. DO NOT recreate them.
-        LOG.info("EventSub handoff завершён | session=%s", session["id"])
+        LOG.info("EventSub handoff завершён | session=%s", session.id)
 
     @staticmethod
     async def _close(connection: _Connection) -> None:
+        tasks: list[asyncio.Task[object]] = []
         for task in (connection.read, connection.reset, connection.handoff):
-            if task and not task.done():
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in (connection.read, connection.reset, connection.handoff) if task),
-            return_exceptions=True,
-        )
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                tasks.append(task)
+        await asyncio.gather(*tasks, return_exceptions=True)
         # If handoff finished simultaneously with cancellation, close its socket too.
         if connection.handoff and connection.handoff.done() and not connection.handoff.cancelled():
             with contextlib.suppress(Exception):
@@ -367,13 +355,13 @@ class EventSub:
         token = await self.api.tokens.get(self.config.bot_id, CHAT_SCOPES)
         self.state.bot_login, self.state.auth_ok = token.login, True
         users = await self.api.users(ids=[self.config.channel_id])
-        if not users or users[0].get("id") != self.config.channel_id:
+        if not users or users[0].id != self.config.channel_id:
             raise AuthRequiredError("Целевой TWITCH_CHANNEL_ID не найден; проверь .env")
-        self.state.channel_login = users[0]["login"]
+        self.state.channel_login = users[0].login
         ws, session = await self._open(WS_URL)
         try:
             self._welcome(session)
-            await self._fresh(session["id"])
+            await self._fresh(session.id)
         except BaseException:
             await ws.close()
             raise

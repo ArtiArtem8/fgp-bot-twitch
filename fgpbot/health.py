@@ -1,7 +1,5 @@
 """Track readiness and persist a redacted local status snapshot."""
 
-from __future__ import annotations
-
 import asyncio
 import json
 import math
@@ -161,7 +159,7 @@ def read_status(path: Path, max_age: float = 20) -> dict[str, Any]:
             "transport_ready": False,
             "last_error": "Файл состояния ещё не создан",
         }
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError, ValueError, KeyError, TypeError:
         return {
             "status": "UNKNOWN",
             "transport_ready": False,
@@ -173,7 +171,7 @@ def read_status(path: Path, max_age: float = 20) -> dict[str, Any]:
         age = time.time() - float(data["written_at"])
         if not math.isfinite(age):
             raise ValueError("invalid timestamp")
-    except (ValueError, KeyError, TypeError):
+    except ValueError, KeyError, TypeError:
         return {
             "status": "UNKNOWN",
             "transport_ready": False,
@@ -222,17 +220,12 @@ class SingleInstance:
     def __exit__(self, *_: object) -> None:
         if self.file:
             if os.name == "nt":
-                self._unlock_windows()
+                import msvcrt
+
+                self.file.seek(0)
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
             self.file.close()
             self.file = None
-
-    def _unlock_windows(self) -> None:
-        import msvcrt
-
-        if self.file is None:
-            raise RuntimeError("Файл блокировки не открыт")
-        self.file.seek(0)
-        msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 async def status_writer(state: Health, path: Path) -> None:

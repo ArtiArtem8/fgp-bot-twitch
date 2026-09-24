@@ -1,17 +1,18 @@
 """Make bounded HTTP requests with explicit retry behavior."""
 
-from __future__ import annotations
-
 import asyncio
-import json
 import logging
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, overload
 from urllib.parse import urlsplit
 
 import aiohttp
+import msgspec
 
 from .security import REDACT
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 LOG = logging.getLogger(__name__)
 
@@ -34,6 +35,11 @@ class RemoteError(Exception):
         super().__init__(f"HTTP {status}: {self.detail}")
 
 
+class _ErrorBody(msgspec.Struct):
+    message: str = ""
+    error: str = ""
+
+
 class Http:
     """Apply proxy and retry policy to Twitch HTTP requests."""
 
@@ -42,33 +48,43 @@ class Http:
         self.proxy = proxy
 
     @staticmethod
-    async def _read_response(response: aiohttp.ClientResponse, safe_target: str) -> Any:
+    async def _read_response[T](
+        response: aiohttp.ClientResponse, safe_target: str, model: type[T]
+    ) -> T:
         # Consume the complete body with a hard cap; read(n) may return one chunk.
         raw = bytearray()
         async for chunk in response.content.iter_chunked(65536):
             raw.extend(chunk)
             if len(raw) > 2 * 1024 * 1024:
                 raise ProtocolError(f"Слишком большой ответ от {safe_target}")
-        try:
-            data = json.loads(raw) if raw else {}
-        except (ValueError, UnicodeDecodeError):
-            data = None
         if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
-            detail = (
-                str(data.get("message", data.get("error", "")))
-                if isinstance(data, dict)
-                else "Ответ не JSON"
-            )
+            try:
+                error = msgspec.json.decode(raw, type=_ErrorBody)
+                detail = error.message or error.error
+            except msgspec.DecodeError:
+                detail = "Ответ не JSON"
             try:
                 retry_after = min(30.0, max(0.0, float(response.headers.get("Retry-After", "0"))))
             except ValueError:
                 retry_after = 0
             raise RemoteError(response.status, detail, retry_after)
-        if data is None:
-            raise ProtocolError(f"Некорректный JSON от {safe_target}")
-        return data
+        try:
+            return msgspec.json.decode(raw or b"{}", type=model)
+        except msgspec.DecodeError:
+            raise ProtocolError(f"Некорректный JSON или тип поля от {safe_target}") from None
 
-    async def _request_once(self, method: str, url: str, safe_target: str, **kwargs: Any) -> Any:
+    async def _request_once[T](  # ruff: ignore[too-many-arguments] - transport options mirror aiohttp
+        self,
+        method: str,
+        url: str,
+        safe_target: str,
+        model: type[T],
+        *,
+        headers: Mapping[str, str] | None,
+        params: Mapping[str, str] | list[tuple[str, str]] | None,
+        json: object,
+        data: Mapping[str, str] | None,
+    ) -> T:
         LOG.debug("HTTP %s %s", method, safe_target)
         async with self.session.request(
             method,
@@ -76,17 +92,64 @@ class Http:
             proxy=self.proxy,
             allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=12, connect=5, sock_read=8),
-            **kwargs,
+            headers=headers,
+            params=params,
+            json=json,
+            data=data,
         ) as response:
-            return await self._read_response(response, safe_target)
+            return await self._read_response(response, safe_target, model)
 
-    async def request(self, method: str, url: str, **kwargs: Any) -> Any:
+    @overload
+    async def request[T](
+        self,
+        method: str,
+        url: str,
+        *,
+        model: type[T],
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+        data: Mapping[str, str] | None = None,
+    ) -> T: ...
+
+    @overload
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+        data: Mapping[str, str] | None = None,
+    ) -> object: ...
+
+    async def request(  # ruff: ignore[too-many-arguments] - transport options mirror aiohttp
+        self,
+        method: str,
+        url: str,
+        *,
+        model: type[object] = object,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | list[tuple[str, str]] | None = None,
+        json: object = None,
+        data: Mapping[str, str] | None = None,
+    ) -> object:
         """Retry safe GETs once. Never replay an ambiguous POST."""
         target = urlsplit(url)
         safe_target = f"{target.hostname}{target.path}"
         for attempt in range(2 if method == "GET" else 1):
             try:
-                return await self._request_once(method, url, safe_target, **kwargs)
+                return await self._request_once(
+                    method,
+                    url,
+                    safe_target,
+                    model,
+                    headers=headers,
+                    params=params,
+                    json=json,
+                    data=data,
+                )
             except RemoteError as exc:
                 if (
                     method != "GET"

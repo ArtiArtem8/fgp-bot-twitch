@@ -2,9 +2,10 @@
 name = "fgp-bot-twitch"
 version = "2.0.0"
 description = "Local single-channel Twitch bot with explicit readiness and end-to-end checks"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "aiohttp>=3.13.3,<4",
+    "msgspec>=0.21.1,<1",
     "python-dotenv>=1.2.2,<2",
 ]
 
@@ -22,7 +23,7 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 99
 preview = true
 force-exclude = true
@@ -62,10 +63,6 @@ ignore = [
 "fgpbot/config.py" = ["ambiguous-unicode-character-string"]
 "fgpbot/tokens.py" = ["ambiguous-unicode-character-string"]
 "fgpbot/health.py" = ["import-outside-top-level"] # msvcrt/fcntl exist on different OSes.
-# aiohttp/WebSocket and decoded JSON are dynamic external API boundaries.
-"fgpbot/eventsub.py" = ["any-type"]
-"fgpbot/network.py" = ["any-type"]
-"fgpbot/twitch.py" = ["any-type"]
 # The notification fixture exposes independent wire fields; grouping them
 # would make individual protocol scenarios harder to read.
 "tests/helpers.py" = ["too-many-arguments"]
@@ -92,7 +89,7 @@ max-bool-expr = 4
 include = ["fgpbot", "tests", "main.py"]
 
 [tool.ty.environment]
-python-version = "3.12"
+python-version = "3.14"
 python-platform = "win32"
 
 [tool.ty.rules]
@@ -127,4 +124,4 @@ source = ["fgpbot"]
 show_missing = true
 skip_covered = true
 precision = 1
-fail_under = 85.0
+fail_under = 86.5

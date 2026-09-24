@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import sqlite3
 import time
@@ -7,12 +5,16 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
+import msgspec
+
 from fgpbot.app import Application
-from fgpbot.commands import Commands, Music
+from fgpbot.commands import Commands, Music, MusicTrack
 from fgpbot.network import NetworkError, ProtocolError
 from fgpbot.tokens import AuthRequiredError
 from fgpbot.twitch import DeliveryError
-from tests.helpers import StoreCase, cancel, fake_api, notification, ready
+from fgpbot.wire import Follow, Followers, User
+from tests.helpers import StoreCase, cancel, fake_api, ready
+from tests.helpers import typed_notification as notification
 
 if TYPE_CHECKING:
     from fgpbot.twitch import Twitch
@@ -42,6 +44,36 @@ class CommandTests(StoreCase):
             ),
             1,
         )
+
+    async def test_message_log_policy_deduplication_and_retention(self) -> None:
+        await self.commands.handle(notification("hello", message_id="viewer-message"))
+        await self.commands.handle(notification("!ping", message_id="viewer-command"))
+        await self.commands.handle(notification("hello", message_id="viewer-message"))
+        await self.commands.handle(
+            notification("!fgpcheck ignored", message_id="bot-diagnostic", user_id="100")
+        )
+        await self.commands.handle(notification("foreign", message_id="shared-chat", source="999"))
+        rows = await self.store.call(
+            lambda db: db.execute("SELECT message_id FROM messages ORDER BY message_id").fetchall()
+        )
+        self.assertEqual([row[0] for row in rows], ["viewer-command", "viewer-message"])
+        self.assertEqual(self.state.features["message_log"], "READY")
+        await self.store.call(
+            lambda db: db.execute(
+                "UPDATE messages SET timestamp=datetime('now', '-3 days') "
+                "WHERE message_id='viewer-message'"
+            )
+        )
+        await self.store.call(
+            lambda db: db.execute(
+                "UPDATE messages SET timestamp=datetime('now') WHERE message_id='viewer-command'"
+            )
+        )
+        await self.store.cleanup(1)
+        remaining = await self.store.call(
+            lambda db: db.execute("SELECT message_id FROM messages").fetchone()[0]
+        )
+        self.assertEqual(remaining, "viewer-command")
 
     async def test_foreign_channel_shared_source_and_self_commands_are_ignored(self) -> None:
         await self.commands.handle(notification(channel="999"))
@@ -86,7 +118,7 @@ class CommandTests(StoreCase):
 
     async def test_no_unwatched_song_does_not_invent_current_song(self) -> None:
         self.commands.music = Music(self.api.http, "synthetic-music-token")
-        self.api.http.request.return_value = [{"title": "old", "is_watched": True}]
+        self.api.http.request.return_value = [MusicTrack(title="old", is_watched=True)]
         await self.commands.handle(notification("!трек"))
         self.assertIn("нет", self.api.send.call_args.args[0])
         self.assertNotIn("old", self.api.send.call_args.args[0])
@@ -100,7 +132,7 @@ class CommandTests(StoreCase):
         self.assertEqual(self.state.features["followage"], "AUTH_REQUIRED")
 
     async def test_followage_bot_moderator_fallback_after_owner_failure(self) -> None:
-        self.api.request.side_effect = [AuthRequiredError("owner revoked"), {"data": []}]
+        self.api.request.side_effect = [AuthRequiredError("owner revoked"), Followers([])]
         await self.commands.handle(notification("!followage"))
         self.assertIn("не зафоловлен", self.api.send.call_args.args[0])
         self.assertEqual(
@@ -108,7 +140,7 @@ class CommandTests(StoreCase):
         )
 
     async def test_followage_success_formats_real_date(self) -> None:
-        self.api.request.return_value = {"data": [{"followed_at": "2020-01-01T00:00:00Z"}]}
+        self.api.request.return_value = Followers([Follow("2020-01-01T00:00:00Z")])
         await self.commands.handle(notification("!followage"))
         self.assertIn("следит за каналом", self.api.send.call_args.args[0])
         self.assertEqual(self.state.features["followage"], "READY")
@@ -126,7 +158,7 @@ class CommandTests(StoreCase):
     async def test_social_aliases_and_joke_ban_no_moderation_api(self) -> None:
         for i, text in enumerate(("!ДС", "!тг", "!help")):
             await self.commands.handle(notification(text, message_id=f"alias-{i}"))
-        self.api.users.return_value = [{"id": "400", "login": "friend"}]
+        self.api.users.return_value = [User("400", "friend")]
         await self.commands.handle(notification("!бан friend", message_id="ban"))
         self.assertIn("Шуточный", self.api.send.call_args.args[0])
         self.api.request.assert_not_awaited()
@@ -158,21 +190,30 @@ class CommandTests(StoreCase):
 
 
 class MusicTests(StoreCase):
+    async def test_wire_model_accepts_used_fields_and_rejects_wrong_types(self) -> None:
+        tracks = msgspec.json.decode(
+            b'[{"title":"Song","duration":"03:14","is_watched":false,"extra":42}]',
+            type=list[MusicTrack],
+        )
+        self.assertEqual((tracks[0].title, tracks[0].duration), ("Song", "03:14"))
+        with self.assertRaises(msgspec.ValidationError):
+            msgspec.json.decode(b'[{"title":42}]', type=list[MusicTrack])
+
     async def test_boolean_string_handling_and_five_second_cache(self) -> None:
         api = fake_api()
         api.http.request.return_value = [
-            {"title": "skip", "is_watched": "true"},
-            {"title": "keep", "is_watched": "false"},
-            {"title": "skip2", "is_watched": 1},
+            MusicTrack(title="skip", is_watched="true"),
+            MusicTrack(title="keep", is_watched="false"),
+            MusicTrack(title="skip2", is_watched=1),
         ]
         music = Music(api.http, "synthetic-music-token")
-        self.assertEqual([x["title"] for x in await music.queue()], ["keep"])
+        self.assertEqual([x.title for x in await music.queue()], ["keep"])
         await music.queue()
         api.http.request.assert_awaited_once()
 
     async def test_invalid_payload_is_not_silently_an_empty_queue(self) -> None:
         api = fake_api()
-        for payload in ({"error": "unavailable"}, [None], [{"is_watched": "maybe"}]):
+        for payload in ({"error": "unavailable"}, [None], [MusicTrack(is_watched="maybe")]):
             api.http.request.return_value = payload
             with self.assertRaises(ProtocolError):
                 await Music(api.http, "synthetic-music-token").queue()

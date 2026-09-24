@@ -1,20 +1,55 @@
 """Persist tokens, chat events, and probes in local SQLite."""
 
-from __future__ import annotations
-
 import asyncio
-import json
 import os
 import sqlite3
 import time
 from contextlib import closing
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, ReadOnly, TypedDict
+
+import msgspec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from .wire import ChatEvent
+
 PROBE_COOLDOWN_SECONDS = 30
+
+
+class TokenRow(TypedDict):
+    """Read-only snapshot of the existing tokens table."""
+
+    user_id: ReadOnly[str]
+    token: ReadOnly[str]
+    refresh: ReadOnly[str]
+
+
+class ProbeRow(TypedDict):
+    """Read-only snapshot of one persisted diagnostic probe."""
+
+    nonce: ReadOnly[str]
+    created: ReadOnly[float]
+    run_id: ReadOnly[str]
+    state: ReadOnly[str]
+    message_id: ReadOnly[str | None]
+    observed_id: ReadOnly[str | None]
+    detail: ReadOnly[str]
+
+
+def _probe_row(row: sqlite3.Row) -> ProbeRow:
+    return ProbeRow(
+        nonce=row["nonce"],
+        created=row["created"],
+        run_id=row["run_id"],
+        state=row["state"],
+        message_id=row["message_id"],
+        observed_id=row["observed_id"],
+        detail=row["detail"],
+    )
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tokens(
     user_id TEXT PRIMARY KEY, token TEXT NOT NULL, refresh TEXT NOT NULL
@@ -68,13 +103,17 @@ class Store:
         if os.name != "nt":
             self.path.chmod(0o600)
 
-    async def token(self, user_id: str) -> dict[str, Any] | None:
+    async def token(self, user_id: str) -> TokenRow | None:
         row = await self.call(
             lambda db: db.execute(
                 "SELECT user_id, token, refresh FROM tokens WHERE user_id=?", (user_id,)
             ).fetchone()
         )
-        return dict(row) if row else None
+        return (
+            TokenRow(user_id=row["user_id"], token=row["token"], refresh=row["refresh"])
+            if row
+            else None
+        )
 
     async def save_token(
         self, user_id: str, token: str, refresh: str, expected: tuple[str, str] | None = None
@@ -107,21 +146,21 @@ class Store:
             )
         )
 
-    async def log_message(self, event: dict[str, Any], timestamp: str) -> None:
-        badges = event.get("badges", [])
-        subscriber = any(b.get("set_id", "").lower() in {"subscriber", "founder"} for b in badges)
+    async def log_message(self, event: ChatEvent, timestamp: str) -> None:
+        badges = event.badges
+        subscriber = any(b.set_id.lower() in {"subscriber", "founder"} for b in badges)
         values = (
-            event["message_id"],
-            event["chatter_user_id"],
-            event.get("chatter_user_login", ""),
-            event.get("chatter_user_name", ""),
-            event["broadcaster_user_id"],
-            event["message"]["text"],
+            event.message_id,
+            event.chatter_user_id,
+            event.chatter_user_login,
+            event.chatter_user_name,
+            event.broadcaster_user_id,
+            event.message.text,
             timestamp,
-            json.dumps(badges, ensure_ascii=False),
+            msgspec.json.encode(badges).decode(),
             subscriber,
             None,
-            event.get("message_type", "text"),
+            event.message_type,
         )
         # Follower status is unknown, NOT false. No API request per message.
         await self.call(
@@ -151,8 +190,8 @@ class Store:
 
         await self.call(create)
 
-    async def claim_probe(self, run_id: str) -> dict[str, Any] | None:
-        def claim(db: sqlite3.Connection) -> dict[str, Any] | None:
+    async def claim_probe(self, run_id: str) -> ProbeRow | None:
+        def claim(db: sqlite3.Connection) -> ProbeRow | None:
             db.execute("BEGIN IMMEDIATE")
             db.execute(
                 "UPDATE fgp_probes SET state='FAILED',detail='Бот перезапущен или запрос устарел' "
@@ -167,15 +206,15 @@ class Store:
             if not row:
                 return None
             db.execute("UPDATE fgp_probes SET state='SENDING' WHERE nonce=?", (row["nonce"],))
-            return dict(row)
+            return _probe_row(row)
 
         return await self.call(claim)
 
-    async def probe(self, nonce: str) -> dict[str, Any] | None:
+    async def probe(self, nonce: str) -> ProbeRow | None:
         row = await self.call(
             lambda db: db.execute("SELECT * FROM fgp_probes WHERE nonce=?", (nonce,)).fetchone()
         )
-        return dict(row) if row else None
+        return _probe_row(row) if row else None
 
     async def probe_sent(self, nonce: str, message_id: str) -> None:
         await self.call(

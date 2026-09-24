@@ -1,7 +1,5 @@
 """Expose local bot setup, status, and diagnostic commands."""
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import importlib.metadata
@@ -27,9 +25,11 @@ from .security import REDACT, setup_logging
 from .storage import Store
 from .tokens import Tokens
 from .twitch import HELIX, Twitch
+from .wire import Subscriptions, Users
 
 if TYPE_CHECKING:
     from .config import Config
+    from .wire import Subscription
 
 LOG = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def _show_timestamp(label: str, value: object) -> None:
         if not isinstance(value, (str, int, float)):
             raise TypeError
         stamp = datetime.fromtimestamp(float(value)).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    except (ValueError, OverflowError, OSError, TypeError):
+    except ValueError, OverflowError, OSError, TypeError:
         print(f"{label}: неизвестно")
     else:
         print(f"{label}: {stamp}")
@@ -146,18 +146,18 @@ async def _doctor_online(
     http = Http(session, config.proxy)
     tokens = Tokens(config, store, http)
     identity = await tokens.validate(token, config.bot_id)
-    report["bot_login"] = identity.get("login")
-    report["bot_scopes"] = identity["scopes"]
-    report["missing_chat_scopes"] = sorted(CHAT_SCOPES - frozenset(identity["scopes"]))
-    report["expires_in_seconds"] = identity["expires_in"]
+    report["bot_login"] = identity.login
+    report["bot_scopes"] = identity.scopes
+    report["missing_chat_scopes"] = sorted(CHAT_SCOPES - frozenset(identity.scopes))
+    report["expires_in_seconds"] = identity.expires_in
     report["bot_authorization"] = (
         "VALID" if not report["missing_chat_scopes"] else "MISSING_SCOPES: запусти auth"
     )
     headers = {"Client-Id": config.client_id, "Authorization": f"Bearer {token}"}
     users = await http.request(
-        "GET", HELIX + "/users", params={"id": config.channel_id}, headers=headers
+        "GET", HELIX + "/users", params={"id": config.channel_id}, headers=headers, model=Users
     )
-    report["channel"] = [{"id": u["id"], "login": u["login"]} for u in users.get("data", [])]
+    report["channel"] = [{"id": u.id, "login": u.login} for u in users.data]
     subs = await _subscriptions(http, headers)
     runtime = read_status(config.status_file)
     report["runtime"] = runtime
@@ -168,14 +168,20 @@ async def _doctor_online(
     report["chat_subscription_check"] = "READ_ONLY; сквозная доставка здесь не проверяется"
 
 
-async def _subscriptions(http: Http, headers: dict[str, str]) -> list[dict[str, Any]]:
-    subs, params, cursors = [], {}, set()
+async def _subscriptions(http: Http, headers: dict[str, str]) -> list[Subscription]:
+    subs: list[Subscription] = []
+    params: dict[str, str] = {}
+    cursors: set[str] = set()
     for _ in range(100):
         response = await http.request(
-            "GET", HELIX + "/eventsub/subscriptions", params=params, headers=headers
+            "GET",
+            HELIX + "/eventsub/subscriptions",
+            params=params,
+            headers=headers,
+            model=Subscriptions,
         )
-        subs.extend(response.get("data", []))
-        cursor = response.get("pagination", {}).get("cursor")
+        subs.extend(response.data)
+        cursor = response.pagination.cursor
         if not cursor:
             return subs
         if cursor in cursors:

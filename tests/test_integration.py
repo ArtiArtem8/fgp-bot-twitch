@@ -4,8 +4,6 @@ No test reads the user's .env/database. Every credential is synthetic. Twitch
 URLs are replaced before any application task starts, and restored afterwards.
 """
 
-from __future__ import annotations
-
 import asyncio
 import io
 import socket

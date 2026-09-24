@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import tempfile
 import time
@@ -10,13 +8,19 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
+import msgspec
+
 from fgpbot.config import CHAT_SCOPES, Config
 from fgpbot.health import Health
 from fgpbot.storage import Store
 from fgpbot.tokens import Token
+from fgpbot.wire import Subscription, eventsub
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from fgpbot.storage import ProbeRow, TokenRow
+    from fgpbot.wire import Frame
 
 type Payload = dict[str, Any]
 
@@ -116,6 +120,32 @@ def notification(
     }
 
 
+def typed_notification(
+    text: str = "!ping",
+    *,
+    message_id: str = "viewer-message-1",
+    user_id: str = "300",
+    channel: str = "200",
+    metadata_id: str | None = None,
+    source: str | None = None,
+    kind: str = "channel.chat.message",
+) -> Frame:
+    """Pass a wire fixture through the same decoder as a live WebSocket frame."""
+    return eventsub(
+        msgspec.json.encode(
+            notification(
+                text,
+                message_id=message_id,
+                user_id=user_id,
+                channel=channel,
+                metadata_id=metadata_id,
+                source=source,
+                kind=kind,
+            )
+        )
+    )
+
+
 def welcome(session: str = "session-1", keepalive: int | None = 30) -> Payload:
     return {
         "metadata": {"message_type": "session_welcome"},
@@ -139,7 +169,11 @@ def fake_api() -> SimpleNamespace:
         users=AsyncMock(return_value=[]),
         request=AsyncMock(),
         tokens=SimpleNamespace(get=AsyncMock(return_value=token()), invalidate=lambda *_: None),
-        subscribe=AsyncMock(side_effect=subscription),
+        subscribe=AsyncMock(
+            side_effect=lambda session, kind: msgspec.convert(
+                subscription(session, kind), type=Subscription
+            )
+        ),
     )
 
 
@@ -164,13 +198,13 @@ class StoreCase(unittest.IsolatedAsyncioTestCase):
         await self.store.initialize()
         self.state = Health(self.config.bot_id, self.config.channel_id)
 
-    async def token_row(self, user_id: str) -> Payload:
+    async def token_row(self, user_id: str) -> TokenRow:
         row = await self.store.token(user_id)
         if row is None:
             raise AssertionError(f"Expected stored token for {user_id}")
         return row
 
-    async def probe_row(self, nonce: str) -> Payload:
+    async def probe_row(self, nonce: str) -> ProbeRow:
         row = await self.store.probe(nonce)
         if row is None:
             raise AssertionError(f"Expected stored probe for {nonce}")

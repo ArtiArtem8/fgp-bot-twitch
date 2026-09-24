@@ -1,7 +1,5 @@
 """Parse chat commands and produce bounded replies."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import re
@@ -10,13 +8,16 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+import msgspec
 
 from .config import FOLLOW_SCOPE
 from .network import NetworkError, ProtocolError, RemoteError
 from .security import REDACT
 from .tokens import AuthRequiredError
 from .twitch import DeliveryError, chat_text
+from .wire import ChatEvent, Followers, NotificationPayload, StreamEvent, User
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from .network import Http
     from .storage import Store
     from .twitch import Twitch
+    from .wire import Frame
 
 LOG = logging.getLogger(__name__)
 MAX_QUEUE_TEXT_LENGTH = 400
@@ -47,7 +49,7 @@ def russian_word(n: int, one: str, few: str, many: str) -> str:
 def format_time_russian(seconds: int, depth: int = 2) -> str:
     """Render a duration with up to the requested number of units."""
     seconds = max(0, int(seconds))
-    parts = []
+    parts: list[str] = []
     for size, words in (
         (31536000, ("год", "года", "лет")),
         (86400, ("день", "дня", "дней")),
@@ -84,45 +86,56 @@ class Chat:
     text: str
 
 
+class MusicTrack(msgspec.Struct, frozen=True):
+    """Fields the music commands use from a Trula queue item."""
+
+    title: str | None = None
+    duration: str | int | float | None = None
+    is_watched: bool | int | str | None = False
+
+
 class Music:
     """Read and briefly cache the optional music queue."""
 
     def __init__(self, http: Http, token: str) -> None:
         self.http, self.token = http, token
-        self._cached: list[dict[str, Any]] = []
+        self._cached: list[MusicTrack] = []
         self._until = 0.0
         self._lock = asyncio.Lock()
 
-    async def queue(self) -> list[dict[str, Any]]:
+    async def queue(self) -> list[MusicTrack]:
         if not self.token:
             raise ValueError("Музыкальный сервис не настроен: отсутствует TRULA_MUSIC_TOKEN")
         async with self._lock:
             if time.monotonic() < self._until:
                 return list(self._cached)
             data = await self.http.request(
-                "GET", "https://trula-music.ru/obs/orders/", params={"token": self.token}
+                "GET",
+                "https://trula-music.ru/obs/orders/",
+                params={"token": self.token},
+                model=list[MusicTrack],
             )
-            if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+            if not isinstance(data, list) or any(not isinstance(row, MusicTrack) for row in data):
                 raise ProtocolError("Музыкальный сервис вернул не список треков")
-            result = []
+            result: list[MusicTrack] = []
             for track in data:
-                watched = track.get("is_watched", False)
-                if watched in (True, 1, "true", "True", "1"):  # ruff: ignore[literal-membership] - JSON may be unhashable
+                watched = track.is_watched
+                if watched in {True, "true", "True", "1"}:
                     continue
-                if watched not in (False, 0, "false", "False", "0", None):  # ruff: ignore[literal-membership] - JSON may be unhashable
+                if watched not in {False, "false", "False", "0", None}:
                     raise ProtocolError("Музыкальный сервис: непонятное значение is_watched")
                 result.append(track)
             self._cached, self._until = result, time.monotonic() + 5
             return list(result)
 
 
-def format_queue(tracks: list[dict[str, Any]]) -> str:
+def format_queue(tracks: list[MusicTrack]) -> str:
     """Summarize the music queue within chat message limits."""
     if not tracks:
         return "Музыкальная очередь пуста"
     parts: list[str] = []
     for index, track in enumerate(tracks[:10], 1):
-        title = chat_text(str(track.get("title") or "Неизвестный трек"), 90)
+        title = chat_text(str(track.title or "Неизвестный трек"), 90)
         part = f"{index}. {'▶' if index == 1 else '⏭'} {title}"
         if len(" | ".join([*parts, part])) > MAX_QUEUE_TEXT_LENGTH:
             break
@@ -179,33 +192,40 @@ class Commands:
     async def reply(self, chat: Chat, text: str) -> None:
         await self.send(text, reply_to=chat.id)
 
-    async def handle(self, frame: dict[str, Any]) -> None:
-        event = frame["payload"]["event"]
-        kind = frame["payload"]["subscription"]["type"]
-        if event.get("broadcaster_user_id") != self.config.channel_id:
+    async def handle(self, frame: Frame) -> None:
+        payload = frame.payload
+        if not isinstance(payload, NotificationPayload):
+            raise ProtocolError("Команда получила не EventSub notification")
+        event = payload.event
+        kind = payload.subscription.type
+        if event.broadcaster_user_id != self.config.channel_id:
             self.state.filtered_events += 1
             return
         if kind == "stream.online":
-            if self.config.greet_stream and await self.store.claim_event(f"stream:{event['id']}"):
-                name = event.get("broadcaster_user_name") or self.state.channel_login
+            if not isinstance(event, StreamEvent):
+                raise ProtocolError("Stream notification без stream event")
+            if self.config.greet_stream and await self.store.claim_event(f"stream:{event.id}"):
+                name = event.broadcaster_user_name or self.state.channel_login
                 await self.send(f"Привет, {name}! yablok2Kiss")
             return
         if kind != "channel.chat.message":
             return
+        if not isinstance(event, ChatEvent):
+            raise ProtocolError("Chat notification без chat event")
         await self._chat_message(frame, event)
 
-    async def _chat_message(self, frame: dict[str, Any], event: dict[str, Any]) -> None:
+    async def _chat_message(self, frame: Frame, event: ChatEvent) -> None:
         # Do not execute commands originating in another Shared Chat channel.
-        source = event.get("source_broadcaster_user_id")
+        source = event.source_broadcaster_user_id
         if source and source != self.config.channel_id:
             self.state.filtered_events += 1
             return
         chat = Chat(
-            event["message_id"],
-            event["chatter_user_id"],
-            event.get("chatter_user_login", ""),
-            event.get("chatter_user_name", ""),
-            event["message"]["text"],
+            event.message_id,
+            event.chatter_user_id,
+            event.chatter_user_login,
+            event.chatter_user_name,
+            event.message.text,
         )
         self.state.received += 1
         self.state.last_message_at = time.time()
@@ -222,7 +242,7 @@ class Commands:
                 LOG.info("PROBE RECEIVED | diagnostic command reached handler")
             return
         if self.config.log_chat:
-            timestamp = frame["metadata"].get("message_timestamp") or datetime.now(UTC).isoformat()
+            timestamp = frame.metadata.message_timestamp or datetime.now(UTC).isoformat()
             try:
                 await self.store.log_message(event, timestamp)
                 self.state.features["message_log"] = "READY"
@@ -286,10 +306,10 @@ class Commands:
     async def telegram(self, chat: Chat, _: str) -> None:
         await self.reply(chat, f"Телеграм: {self.config.telegram_url}")
 
-    async def target(self, chat: Chat, name: str) -> dict[str, Any] | None:
+    async def target(self, chat: Chat, name: str) -> User | None:
         name = name.strip().lstrip("@").lower()
         if not name:
-            return {"id": chat.user_id, "login": chat.login, "display_name": chat.name}
+            return User(chat.user_id, chat.login, chat.name)
         if not re.fullmatch(r"[a-z0-9_]{1,25}", name):
             return None
         users = await self.api.users(login=name)
@@ -302,7 +322,7 @@ class Commands:
                 chat, "Пользователь не найден. Укажите Twitch-логин, не отображаемое имя."
             )
             return
-        result = await self._followers(target["id"])
+        result = await self._followers(target.id)
         if result is None:
             self.state.features["followage"] = "AUTH_REQUIRED"
             await self.reply(
@@ -312,22 +332,20 @@ class Commands:
             )
             return
         self.state.features["followage"] = "READY"
-        rows = result.get("data")
-        if not isinstance(rows, list):
-            raise ProtocolError("Followage: нет массива data")
+        rows = result.data
         if not rows:
-            await self.reply(chat, f"@{target['login']} пока не зафоловлен на этот канал.")
+            await self.reply(chat, f"@{target.login} пока не зафоловлен на этот канал.")
             return
         try:
-            followed = datetime.fromisoformat(rows[0]["followed_at"])
+            followed = datetime.fromisoformat(rows[0].followed_at)
             if followed.tzinfo is None:
                 raise ValueError
-        except (ValueError, KeyError, TypeError):
+        except ValueError, TypeError:
             raise ProtocolError("Followage: некорректная дата") from None
         age = format_time_russian(int((datetime.now(UTC) - followed).total_seconds()))
-        await self.reply(chat, f"@{target['login']} следит за каналом уже {age}!")
+        await self.reply(chat, f"@{target.login} следит за каналом уже {age}!")
 
-    async def _followers(self, user_id: str) -> dict[str, Any] | None:
+    async def _followers(self, user_id: str) -> Followers | None:
         # Broadcaster token is OPTIONAL. A scoped bot moderator token also works.
         for token_user in dict.fromkeys((self.config.channel_id, self.config.bot_id)):
             try:
@@ -341,6 +359,7 @@ class Commands:
                         "user_id": user_id,
                         "first": "1",
                     },
+                    model=Followers,
                 )
             except AuthRequiredError:
                 continue
@@ -349,7 +368,7 @@ class Commands:
                     raise
         return None
 
-    async def _music(self, chat: Chat) -> list[dict[str, Any]] | None:
+    async def _music(self, chat: Chat) -> list[MusicTrack] | None:
         try:
             tracks = await self.music.queue()
             self.state.features["music"] = "READY"
@@ -375,10 +394,7 @@ class Commands:
         track = tracks[0]
         await self.reply(
             chat,
-            (
-                f"Сейчас играет: {track.get('title') or 'Неизвестный трек'} "
-                f"({track.get('duration') or '??:??'})"
-            ),
+            (f"Сейчас играет: {track.title or 'Неизвестный трек'} ({track.duration or '??:??'})"),
         )
 
     async def queue(self, chat: Chat, _: str) -> None:
@@ -390,13 +406,13 @@ class Commands:
         target = await self.target(chat, name)
         if target is None:
             await self.reply(chat, "Такого Twitch-пользователя не найдено.")
-        elif target["id"] == chat.user_id:
+        elif target.id == chat.user_id:
             await self.reply(chat, "Самобан отменён. Оставайся с нами 🙂")
-        elif target["id"] == self.config.bot_id:
+        elif target.id == self.config.bot_id:
             await self.reply(
                 chat, "Бот отклонил свой шуточный бан. У него лапки, но есть право вето."
             )
-        elif target["id"] == self.config.channel_id:
+        elif target.id == self.config.channel_id:
             await self.reply(chat, "Стримера забанить не получилось: кто тогда будет стримить?")
         else:
             templates = (
@@ -404,6 +420,6 @@ class Commands:
                 "@{target} не прошёл проверку серьёзностью. Виртуальный бан на три смешинки.",  # ruff: ignore[missing-f-string-syntax]
                 "Модерация понарошку молниеносна: @{target}, ты всё ещё с нами.",  # ruff: ignore[missing-f-string-syntax]
             )
-            text = templates[self._ban_index % len(templates)].format(target=target["login"])
+            text = templates[self._ban_index % len(templates)].format(target=target.login)
             self._ban_index += 1
             await self.reply(chat, text)

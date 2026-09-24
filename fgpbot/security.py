@@ -1,7 +1,5 @@
 """Redact credentials before writing rendered log records."""
 
-from __future__ import annotations
-
 import logging
 import re
 from collections import deque

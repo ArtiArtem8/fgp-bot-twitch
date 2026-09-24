@@ -1,7 +1,5 @@
 """Authorize the bot through a single-use loopback OAuth callback."""
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import html
@@ -18,6 +16,7 @@ from .network import Http, ProtocolError
 from .security import REDACT
 from .storage import Store
 from .tokens import TOKEN_URL, AuthRequiredError, Tokens
+from .wire import OAuthTokens
 
 if TYPE_CHECKING:
     from .config import Config
@@ -37,8 +36,8 @@ class Authorization:
     ) -> None:
         self.config, self.store, self.http = config, store, http
         self.expected_user = config.bot_id if account == "bot" else config.channel_id
-        self.scopes = (
-            CHAT_SCOPES | (FOLLOW_SCOPE if followers else frozenset())
+        self.scopes: frozenset[str] = (
+            CHAT_SCOPES | (FOLLOW_SCOPE if followers else frozenset[str]())
             if account == "bot"
             else FOLLOW_SCOPE
         )
@@ -110,25 +109,21 @@ class Authorization:
                 "grant_type": "authorization_code",
                 "redirect_uri": self.config.redirect_uri,
             },
+            model=OAuthTokens,
         )
-        access, refresh = response.get("access_token"), response.get("refresh_token")
-        if (
-            not isinstance(access, str)
-            or not isinstance(refresh, str)
-            or not access
-            or not refresh
-        ):
+        access, refresh = response.access_token, response.refresh_token
+        if not access or not refresh:
             raise ProtocolError("Twitch не вернул пару токенов")
         REDACT.add(access, refresh)
         identity = await Tokens(self.config, self.store, self.http).validate(
             access, self.expected_user
         )
-        missing = self.scopes - frozenset(identity["scopes"])
+        missing = self.scopes - frozenset(identity.scopes)
         if missing:
             message = "Не выданы запрошенные scopes: " + ", ".join(sorted(missing))
             raise AuthRequiredError(message)
         await self.store.save_token(self.expected_user, access, refresh)
-        return str(identity.get("login", ""))
+        return identity.login
 
 
 async def authorize(config: Config, account: str, *, followers: bool, open_browser: bool) -> bool:
