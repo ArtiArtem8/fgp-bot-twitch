@@ -51,7 +51,7 @@ class Http:
                 raise ProtocolError(f"Слишком большой ответ от {safe_target}")
         try:
             data = json.loads(raw) if raw else {}
-        except (ValueError, UnicodeDecodeError):
+        except ValueError, UnicodeDecodeError:
             data = None
         if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
             detail = (

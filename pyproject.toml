@@ -2,7 +2,7 @@
 name = "fgp-bot-twitch"
 version = "2.0.0"
 description = "Local single-channel Twitch bot with explicit readiness and end-to-end checks"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "aiohttp>=3.13.3,<4",
     "python-dotenv>=1.2.2,<2",
@@ -22,7 +22,7 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 99
 preview = true
 force-exclude = true
@@ -92,7 +92,7 @@ max-bool-expr = 4
 include = ["fgpbot", "tests", "main.py"]
 
 [tool.ty.environment]
-python-version = "3.12"
+python-version = "3.14"
 python-platform = "win32"
 
 [tool.ty.rules]

@@ -161,7 +161,7 @@ def read_status(path: Path, max_age: float = 20) -> dict[str, Any]:
             "transport_ready": False,
             "last_error": "Файл состояния ещё не создан",
         }
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError, ValueError, KeyError, TypeError:
         return {
             "status": "UNKNOWN",
             "transport_ready": False,
@@ -173,7 +173,7 @@ def read_status(path: Path, max_age: float = 20) -> dict[str, Any]:
         age = time.time() - float(data["written_at"])
         if not math.isfinite(age):
             raise ValueError("invalid timestamp")
-    except (ValueError, KeyError, TypeError):
+    except ValueError, KeyError, TypeError:
         return {
             "status": "UNKNOWN",
             "transport_ready": False,

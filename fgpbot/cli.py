@@ -85,7 +85,7 @@ def _show_timestamp(label: str, value: object) -> None:
         if not isinstance(value, (str, int, float)):
             raise TypeError
         stamp = datetime.fromtimestamp(float(value)).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    except (ValueError, OverflowError, OSError, TypeError):
+    except ValueError, OverflowError, OSError, TypeError:
         print(f"{label}: неизвестно")
     else:
         print(f"{label}: {stamp}")

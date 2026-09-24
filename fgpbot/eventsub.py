@@ -151,7 +151,7 @@ class EventSub:
                 or not isinstance(data.get("payload"), dict)
             ):
                 raise TypeError
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             raise ProtocolError("Некорректный JSON EventSub") from None
         return data
 

@@ -70,7 +70,7 @@ class Application:
             ) as exc:
                 self.state.error(exc)
                 LOG.error("EVENT FAILED | %s", exc)  # ruff: ignore[error-instead-of-exception] - recoverable event
-            except (ValueError, KeyError, TypeError):
+            except ValueError, KeyError, TypeError:
                 self.state.error("Некорректные данные события; подробности в логе")
                 LOG.exception("Некорректные данные события")
             finally:

@@ -322,7 +322,7 @@ class Commands:
             followed = datetime.fromisoformat(rows[0]["followed_at"])
             if followed.tzinfo is None:
                 raise ValueError
-        except (ValueError, KeyError, TypeError):
+        except ValueError, KeyError, TypeError:
             raise ProtocolError("Followage: некорректная дата") from None
         age = format_time_russian(int((datetime.now(UTC) - followed).total_seconds()))
         await self.reply(chat, f"@{target['login']} следит за каналом уже {age}!")
