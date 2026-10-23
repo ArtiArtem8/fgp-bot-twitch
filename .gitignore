@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 data/
 logs/
@@ -16,7 +17,6 @@ logs/
 *.sqlite*
 .vscode/
 .venv-old/
-# Legacy test/ held secret-bearing scripts; current tests live in tests/.
 test/
 *.db-journal
 *.pem

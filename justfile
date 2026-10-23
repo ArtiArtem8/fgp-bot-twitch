@@ -6,6 +6,12 @@ default:
 sync:
     uv sync --locked
 
+hooks:
+    uv run --locked prek install
+
+hooks-check:
+    uv run --locked prek validate-config prek.toml
+
 fix:
     uv run --locked ruff check --fix .
     uv run --locked ruff format .
@@ -30,11 +36,12 @@ arch:
     uv run --locked tach check
 
 test:
-    uv run --locked python -m unittest discover -s tests -t . -v
+    uv run --locked nose2 --no-user-config --plugin nose2.plugins.mp -N 6 -s tests -t . -q
 
 cov:
     uv run --locked coverage erase
-    uv run --locked coverage run -m unittest discover -s tests -t . -v
+    uv run --locked coverage run -m nose2 --no-user-config --plugin nose2.plugins.mp -N 6 -s tests -t . -q
+    uv run --locked coverage combine
     uv run --locked coverage report
     uv run --locked coverage json -o - | uv run --locked python -c "import json,sys; v=json.load(sys.stdin)['totals']['percent_branches_covered']; print('Branch coverage: %.1f%% (minimum 76.0%%)' % v); sys.exit(v < 76.0)"
 
@@ -48,6 +55,6 @@ actions:
     actionlint
     zizmor --pedantic .github/workflows
 
-check: format lint type deps arch test audit
+check: hooks-check format lint type deps arch test audit
 
-ci: format lint type deps arch cov audit secrets actions
+ci: hooks-check format lint type deps arch cov audit secrets actions
