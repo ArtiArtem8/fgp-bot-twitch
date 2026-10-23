@@ -3,14 +3,14 @@
 import asyncio
 import time
 from http import HTTPStatus
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, TypeForm, overload
 
 from .config import CHAT_SCOPES
 from .network import ProtocolError, RemoteError
 from .wire import SendChat, Subscriptions, Users
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from .config import Config
     from .network import Http
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .wire import Subscription, User
 
 HELIX = "https://api.twitch.tv/helix"
+MAX_SUBSCRIPTION_PAGES = 100
 
 
 class DeliveryError(Exception):
@@ -28,6 +29,26 @@ def chat_text(text: str, limit: int = 500) -> str:
     """Clamp outbound text to the Twitch chat size limit."""
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+async def collect_subscriptions(
+    fetch_page: Callable[[dict[str, str]], Awaitable[Subscriptions]],
+) -> list[Subscription]:
+    """Collect EventSub pages with a page limit and repeated-cursor detection."""
+    result: list[Subscription] = []
+    params: dict[str, str] = {}
+    cursors: set[str] = set()
+    for _ in range(MAX_SUBSCRIPTION_PAGES):
+        page = await fetch_page(params)
+        result.extend(page.data)
+        cursor = page.pagination.cursor
+        if not cursor:
+            return result
+        if cursor in cursors:
+            raise ProtocolError("EventSub pagination повторяет cursor")
+        cursors.add(cursor)
+        params = {"after": cursor}
+    raise ProtocolError("Слишком много страниц EventSub subscriptions")
 
 
 class Twitch:
@@ -46,7 +67,7 @@ class Twitch:
         *,
         user_id: str | None = None,
         scopes: frozenset[str] = frozenset(),
-        model: type[T],
+        model: TypeForm[T],
         params: Mapping[str, str] | list[tuple[str, str]] | None = None,
         json: object = None,
     ) -> T: ...
@@ -70,7 +91,7 @@ class Twitch:
         *,
         user_id: str | None = None,
         scopes: frozenset[str] = frozenset(),
-        model: type[object] = object,
+        model: TypeForm[object] = object,
         params: Mapping[str, str] | list[tuple[str, str]] | None = None,
         json: object = None,
     ) -> object:
@@ -103,22 +124,11 @@ class Twitch:
         return result.data
 
     async def subscriptions(self) -> list[Subscription]:
-        result: list[Subscription] = []
-        params: dict[str, str] = {}
-        cursors: set[str] = set()
-        for _ in range(100):
-            page = await self.request(
+        return await collect_subscriptions(
+            lambda params: self.request(
                 "GET", "/eventsub/subscriptions", params=params, model=Subscriptions
             )
-            result.extend(page.data)
-            cursor = page.pagination.cursor
-            if not cursor:
-                return result
-            if cursor in cursors:
-                raise ProtocolError("EventSub pagination повторяет cursor")
-            cursors.add(cursor)
-            params["after"] = cursor
-        raise ProtocolError("Слишком много страниц EventSub subscriptions")
+        )
 
     def matches(self, sub: Subscription | None, session_id: str, kind: str) -> bool:
         if sub is None:

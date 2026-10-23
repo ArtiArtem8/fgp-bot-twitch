@@ -35,12 +35,12 @@ class Authorization:
         followers: bool = False,
     ) -> None:
         self.config, self.store, self.http = config, store, http
-        self.expected_user = config.bot_id if account == "bot" else config.channel_id
-        self.scopes: frozenset[str] = (
-            CHAT_SCOPES | (FOLLOW_SCOPE if followers else frozenset[str]())
-            if account == "bot"
-            else FOLLOW_SCOPE
-        )
+        if account == "bot":
+            self.expected_user = config.bot_id
+            self.scopes = CHAT_SCOPES | FOLLOW_SCOPE if followers else CHAT_SCOPES
+        else:
+            self.expected_user = config.channel_id
+            self.scopes = FOLLOW_SCOPE
         self.state = secrets.token_urlsafe(32)
         self.used = False
         self.done = asyncio.Event()

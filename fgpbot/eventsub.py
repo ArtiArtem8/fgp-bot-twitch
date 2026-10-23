@@ -24,7 +24,7 @@ from .wire import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from .config import Config
     from .health import Health
@@ -90,7 +90,11 @@ class EventSub:
     """Maintain the EventSub connection and subscription lifecycle."""
 
     def __init__(
-        self, config: Config, api: Twitch, state: Health, enqueue: Callable[[Frame], None]
+        self,
+        config: Config,
+        api: Twitch,
+        state: Health,
+        enqueue: Callable[[Frame], Awaitable[None]],
     ) -> None:
         self.config, self.api, self.state, self.enqueue = config, api, state, enqueue
         self._reset = asyncio.Event()
@@ -183,7 +187,7 @@ class EventSub:
             session_id,
         )
 
-    def _notification(self, frame: Frame) -> None:
+    async def _notification(self, frame: Frame) -> None:
         payload = frame.payload
         if isinstance(payload, EmptyPayload):
             return
@@ -192,7 +196,7 @@ class EventSub:
             return
         if not isinstance(payload, NotificationPayload):
             return  # Unknown subscription type; other kinds are handled by the caller.
-        self._event(frame, payload)
+        await self._event(frame, payload)
 
     def _revocation(self, payload: RevocationPayload) -> None:
         sub = payload.subscription
@@ -203,7 +207,7 @@ class EventSub:
             raise TransportError(f"Подписка на чат отозвана: {sub.status}")
         self.state.features["greeting"] = "REVOKED"
 
-    def _event(self, frame: Frame, payload: NotificationPayload) -> None:
+    async def _event(self, frame: Frame, payload: NotificationPayload) -> None:
         sub, event = payload.subscription, payload.event
         if event.broadcaster_user_id != self.config.channel_id:
             self.state.filtered_events += 1
@@ -220,7 +224,7 @@ class EventSub:
         if self._recent.seen(event_id):
             self.state.duplicate_events += 1
             return
-        self.enqueue(frame)
+        await self.enqueue(frame)
 
     async def _listen(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         connection = _Connection(ws=ws, reset=asyncio.create_task(self._reset.wait()))
@@ -269,7 +273,7 @@ class EventSub:
             return handoff_ready
         self.state.frame_received()
         if frame.metadata.message_type != "session_reconnect":
-            self._notification(frame)
+            await self._notification(frame)
         elif connection.handoff is None:
             payload = frame.payload
             if not isinstance(payload, SessionPayload):

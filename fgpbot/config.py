@@ -26,19 +26,16 @@ class Config:
     bot_id: str
     channel_id: str
     root: Path = ROOT
-    owner_id: str = ""
     proxy: str | None = field(default="http://127.0.0.1:12334", repr=False)
     music_token: str = field(default="", repr=False)
     prefix: str = "!"
     log_level: str = "INFO"
-    log_chat: bool = True
     greet_stream: bool = True
     discord_url: str = "https://discord.gg/qKV4BCCgZ5"
     telegram_url: str = "https://t.me/yabloko18twitch"
     redirect_uri: str = "http://localhost:4343/oauth/callback"
     queue_size: int = 512
     command_cooldown: float = 3.0
-    chat_retention_days: int = 0  # No automatic deletion of existing chat history.
 
     @property
     def data_dir(self) -> Path:
@@ -46,7 +43,7 @@ class Config:
 
     @property
     def database(self) -> Path:
-        return self.data_dir / "tokens.db"  # Original schema/path is preserved.
+        return self.data_dir / "tokens.db"
 
     @property
     def status_file(self) -> Path:
@@ -124,8 +121,7 @@ def _integer(values: dict[str, str], key: str, default: int, *, low: int, high: 
 
 
 def load_config(root: Path = ROOT, env: dict[str, str] | None = None) -> Config:
-    # Deterministic .env resolution; no chdir, global load_dotenv or proxy mutation.
-    """Merge local settings and validate required Twitch credentials."""
+    """Load root/.env, apply environment overrides, and validate Twitch settings."""
     values = {
         k: v
         for k, v in dotenv_values(root / ".env", encoding="utf-8-sig").items()
@@ -137,7 +133,6 @@ def load_config(root: Path = ROOT, env: dict[str, str] | None = None) -> Config:
     channel_id = values.get("TWITCH_CHANNEL_ID", "").strip() or _required(
         values, root, "TWITCH_OWNER_ID"
     )
-    owner_id = values.get("TWITCH_OWNER_ID", channel_id).strip()
     for name, value in (("TWITCH_BOT_ID", bot_id), ("TWITCH_CHANNEL_ID", channel_id)):
         _validate_twitch_id(name, value)
     proxy = _validated_proxy(values)
@@ -153,17 +148,14 @@ def load_config(root: Path = ROOT, env: dict[str, str] | None = None) -> Config:
         client_secret=_required(values, root, "TWITCH_BOT_APP_CLIENT_SECRET"),
         bot_id=bot_id,
         channel_id=channel_id,
-        owner_id=owner_id,
         root=root.resolve(),
         proxy=proxy,
         music_token=values.get("TRULA_MUSIC_TOKEN", "").strip(),
         prefix=prefix,
         log_level=level,
-        log_chat=_boolean(values, "FGP_LOG_CHAT", default=True),
         greet_stream=_boolean(values, "FGP_GREET_STREAM", default=True),
         discord_url=values.get("FGP_DISCORD_URL", "https://discord.gg/qKV4BCCgZ5"),
         telegram_url=values.get("FGP_TELEGRAM_URL", "https://t.me/yabloko18twitch"),
         redirect_uri=redirect_uri,
         queue_size=_integer(values, "FGP_QUEUE_SIZE", 512, low=16, high=4096),
-        chat_retention_days=_integer(values, "FGP_CHAT_RETENTION_DAYS", 0, low=0, high=3650),
     )

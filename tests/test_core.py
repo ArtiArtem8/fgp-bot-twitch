@@ -22,7 +22,7 @@ from fgpbot.commands import (
     russian_word,
 )
 from fgpbot.config import ConfigError, load_config
-from fgpbot.health import Health, SingleInstance, atomic_json, read_status, status_writer
+from fgpbot.health import Health, atomic_json, read_status, single_instance, status_writer
 from fgpbot.security import REDACT, Redactor, SafeFormatter
 from fgpbot.storage import Store
 from fgpbot.wire import Badge, ChatEvent
@@ -41,12 +41,11 @@ class ConfigTests(unittest.TestCase):
             "TWITCH_OWNER_ID": "200",
         }
 
-    def test_legacy_owner_id_is_channel_fallback(self) -> None:
+    def test_channel_defaults_to_configured_owner_id(self) -> None:
         conf = load_config(self.root, self.env)
         self.assertEqual(conf.channel_id, "200")
         self.assertEqual(conf.database, self.root / "data" / "tokens.db")
         self.assertEqual(conf.proxy, "http://127.0.0.1:12334")
-        self.assertEqual(conf.chat_retention_days, 0)
 
     def test_channel_override_and_explicit_direct_connection(self) -> None:
         conf = load_config(self.root, self.env | {"TWITCH_CHANNEL_ID": "400", "FGP_PROXY_URL": ""})
@@ -69,7 +68,7 @@ class ConfigTests(unittest.TestCase):
             ("TWITCH_CHANNEL_ID", "-1"),
             ("FGP_PROXY_URL", "socks5://secret-user:secret-pass@host:10"),
             ("FGP_QUEUE_SIZE", "0"),
-            ("FGP_LOG_CHAT", "maybe"),
+            ("FGP_GREET_STREAM", "maybe"),
             ("FGP_PREFIX", "two words"),
             ("TWITCH_REDIRECT_URI", "http://0.0.0.0:4343/oauth/callback"),
         ):
@@ -114,7 +113,7 @@ class PureCommandTests(unittest.TestCase):
         value = format_queue([MusicTrack(title="a" * 1000) for _ in range(100)])
         self.assertLessEqual(len(value), 500)
         self.assertIn("ещё", value)
-        self.assertIn("пуста", format_queue([]))
+        self.assertEqual(format_queue([]), "В очереди пока ничего нет.")  # ruff: ignore[ambiguous-unicode-character-string] - Russian text
 
 
 class SecurityTests(unittest.TestCase):
@@ -219,11 +218,23 @@ class HealthTests(unittest.TestCase):
     def test_single_instance_lock_releases_without_deleting_file(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "lock"
-            with SingleInstance(path), self.assertRaises(RuntimeError), SingleInstance(path):
+            with single_instance(path), self.assertRaises(RuntimeError), single_instance(path):
                 self.fail("duplicate lock acquired")
             self.assertTrue(path.exists())
-            with SingleInstance(path):
+            with single_instance(path):
                 pass
+
+    def test_lock_file_closes_when_initial_write_fails(self) -> None:
+        file = io.BytesIO()
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(Path, "open", return_value=file),
+            patch.object(file, "write", side_effect=OSError("synthetic disk failure")),
+            self.assertRaises(OSError),
+            single_instance(Path(folder) / "lock"),
+        ):
+            self.fail("lock acquired after a failed write")
+        self.assertTrue(file.closed)
 
     def test_cli_requires_consent_before_any_probe_configuration_or_network(self) -> None:
         with patch("sys.stdout", io.StringIO()), patch.object(cli, "load_config") as load:
@@ -232,25 +243,24 @@ class HealthTests(unittest.TestCase):
 
 
 class StorageTests(StoreCase):
-    async def test_migration_preserves_legacy_tokens_and_messages(self) -> None:
-        # Existing original-schema database, not a newly invented migration fixture.
-        old = self.root / "legacy.db"
-        with closing(sqlite3.connect(old)) as db, db:
+    async def test_initialize_preserves_existing_tokens_and_messages(self) -> None:
+        database = self.root / "existing.db"
+        with closing(sqlite3.connect(database)) as db, db:
             db.execute(
                 "CREATE TABLE tokens(user_id TEXT PRIMARY KEY, token TEXT NOT NULL, "
                 "refresh TEXT NOT NULL)"
             )
-            db.execute("INSERT INTO tokens VALUES('100','legacy-access','legacy-refresh')")
-        store = Store(old)
+            db.execute("INSERT INTO tokens VALUES('100','existing-access','existing-refresh')")
+        store = Store(database)
         await store.initialize()
-        legacy = await store.token("100")
-        if legacy is None:
-            raise AssertionError("Legacy token disappeared during migration")
-        self.assertEqual(legacy["token"], "legacy-access")
+        existing = await store.token("100")
+        if existing is None:
+            raise AssertionError("Stored token disappeared during initialization")
+        self.assertEqual(existing["token"], "existing-access")
         event = msgspec.convert(notification()["payload"]["event"], type=ChatEvent)
         await store.log_message(event, "2020-01-01T00:00:00Z")
         await store.initialize()
-        await store.cleanup(0)
+        await store.cleanup()
         self.assertEqual(
             await store.call(lambda db: db.execute("SELECT count(*) FROM messages").fetchone()[0]),
             1,
@@ -328,6 +338,81 @@ class StorageTests(StoreCase):
 
 
 class AtomicWriteTests(StoreCase):
+    async def test_failed_json_write_preserves_previous_status_and_removes_temp_file(self) -> None:
+        atomic_json(self.config.status_file, self.state.snapshot())
+        previous = self.config.status_file.read_bytes()
+        with self.assertRaises(TypeError):
+            atomic_json(self.config.status_file, {"written": "partial data", "invalid": object()})
+        self.assertEqual(self.config.status_file.read_bytes(), previous)
+        self.assertEqual(list(self.config.data_dir.glob(".*.tmp")), [])
+
+    async def test_database_rejects_deleting_chat_history(self) -> None:
+        event = msgspec.convert(notification()["payload"]["event"], type=ChatEvent)
+        await self.store.log_message(event, "2000-01-01T00:00:00Z")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "must not be deleted"):
+            await self.store.call(lambda db: db.execute("DELETE FROM messages"))
+        await self.store.cleanup()
+        self.assertEqual(
+            await self.store.call(
+                lambda db: db.execute("SELECT count(*) FROM messages").fetchone()[0]
+            ),
+            1,
+        )
+
+    async def test_cancelled_database_write_finishes_commit_before_returning(self) -> None:
+        started, finish = threading.Event(), threading.Event()
+
+        def write(db: sqlite3.Connection) -> None:
+            db.execute(
+                "INSERT INTO tokens VALUES(?,?,?)",
+                ("100", "synthetic-access", "synthetic-refresh"),
+            )
+            started.set()
+            if not finish.wait(2):
+                raise TimeoutError("test did not release the transaction")
+
+        task = asyncio.create_task(self.store.call(write))
+        try:
+            await until(started.is_set)
+            task.cancel()
+            await asyncio.sleep(0.02)
+            self.assertFalse(task.done())
+            task.cancel()
+            await asyncio.sleep(0.02)
+            self.assertFalse(task.done())
+        finally:
+            finish.set()
+            results = await asyncio.gather(task, return_exceptions=True)
+        self.assertIsInstance(results[0], asyncio.CancelledError)
+        self.assertEqual((await self.token_row("100"))["refresh"], "synthetic-refresh")
+
+    async def test_cancelled_database_write_waits_for_rollback_and_preserves_cancellation(
+        self,
+    ) -> None:
+        started, finish = threading.Event(), threading.Event()
+
+        def write(db: sqlite3.Connection) -> None:
+            db.execute(
+                "INSERT INTO tokens VALUES(?,?,?)",
+                ("100", "synthetic-access", "synthetic-refresh"),
+            )
+            started.set()
+            if not finish.wait(2):
+                raise TimeoutError("test did not release the transaction")
+            raise sqlite3.OperationalError("synthetic transaction failure")
+
+        task = asyncio.create_task(self.store.call(write))
+        try:
+            await until(started.is_set)
+            task.cancel()
+            await asyncio.sleep(0.02)
+            self.assertFalse(task.done())
+        finally:
+            finish.set()
+            results = await asyncio.gather(task, return_exceptions=True)
+        self.assertIsInstance(results[0], asyncio.CancelledError)
+        self.assertIsNone(await self.store.token("100"))
+
     async def test_concurrent_json_writes_leave_complete_file_and_no_temporary_files(self) -> None:
         await asyncio.gather(
             *(
@@ -353,6 +438,9 @@ class AtomicWriteTests(StoreCase):
             task = asyncio.create_task(status_writer(self.state, self.config.status_file))
             try:
                 await until(started.is_set)
+                task.cancel()
+                await asyncio.sleep(0.02)
+                self.assertFalse(task.done())
                 task.cancel()
                 await asyncio.sleep(0.02)
                 self.assertFalse(task.done())

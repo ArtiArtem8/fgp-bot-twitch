@@ -3,9 +3,7 @@
 import asyncio
 import logging
 import re
-import sqlite3
 import time
-from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -31,19 +29,16 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger(__name__)
 MAX_QUEUE_TEXT_LENGTH = 400
-MAX_COOLDOWN_ENTRIES = 2048
 
 
 def russian_word(n: int, one: str, few: str, many: str) -> str:
     """Select the Russian noun form for the given count."""
     n = abs(n)
-    return (
-        one
-        if n % 10 == 1 and n % 100 != 11  # ruff: ignore[magic-value-comparison] - Russian grammar
-        else few
-        if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14  # ruff: ignore[magic-value-comparison] - Russian grammar
-        else many
-    )
+    if n % 10 == 1 and n % 100 != 11:  # ruff: ignore[magic-value-comparison] - Russian grammar
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:  # ruff: ignore[magic-value-comparison] - Russian grammar
+        return few
+    return many
 
 
 def format_time_russian(seconds: int, depth: int = 2) -> str:
@@ -70,9 +65,10 @@ def parse_command(text: str, prefix: str) -> tuple[str, str] | None:
     if not text.startswith(prefix):
         return None
     pieces = text[len(prefix) :].split(maxsplit=1)
-    return (
-        (pieces[0].casefold(), pieces[1].strip() if len(pieces) == 2 else "") if pieces else None  # ruff: ignore[magic-value-comparison] - command and argument
-    )
+    if not pieces:
+        return None
+    argument = pieces[1].strip() if len(pieces) > 1 else ""
+    return pieces[0].casefold(), argument
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +79,6 @@ class Chat:
     user_id: str
     login: str
     name: str
-    text: str
 
 
 class MusicTrack(msgspec.Struct, frozen=True):
@@ -132,10 +127,10 @@ class Music:
 def format_queue(tracks: list[MusicTrack]) -> str:
     """Summarize the music queue within chat message limits."""
     if not tracks:
-        return "Музыкальная очередь пуста"
+        return "В очереди пока ничего нет."
     parts: list[str] = []
     for index, track in enumerate(tracks[:10], 1):
-        title = chat_text(str(track.title or "Неизвестный трек"), 90)
+        title = chat_text(track.title or "Неизвестный трек", 90)
         part = f"{index}. {'▶' if index == 1 else '⏭'} {title}"
         if len(" | ".join([*parts, part])) > MAX_QUEUE_TEXT_LENGTH:
             break
@@ -150,21 +145,44 @@ class Commands:
     def __init__(self, config: Config, api: Twitch, store: Store, state: Health) -> None:
         self.config, self.api, self.store, self.state = config, api, store, state
         self.music = Music(api.http, config.music_token)
-        self._cooldowns: OrderedDict[str, float] = OrderedDict()
         self._ban_index = 0
-        self.handlers: dict[str, Callable[[Chat, str], Awaitable[None]]] = {}
-        for handler, names in (
-            (self.ping, ("ping", "пинг")),
-            (self.help, ("help", "commands", "команды")),
-            (self.discord, ("discord", "ds", "дс", "дискорд")),
-            (self.telegram, ("telegram", "tg", "тг", "телеграм")),
-            (self.followage, ("followage",)),
-            (self.currentsong, ("currentsong", "трек")),
-            (self.queue, ("queue", "очередь", "q")),
-            (self.ban, ("ban", "бан", "удалить", "забанить")),
+        self.handlers: frozendict[str, Callable[[Chat, str], Awaitable[None]]] = frozendict({
+            name: handler
+            for handler, names in (
+                (self.ping, ("ping", "пинг")),
+                (self.help, ("help", "commands", "команды")),
+                (self.discord, ("discord", "ds", "дс", "дискорд")),
+                (self.telegram, ("telegram", "tg", "тг", "телеграм")),
+                (self.followage, ("followage",)),
+                (self.currentsong, ("currentsong", "трек")),
+                (self.queue, ("queue", "очередь", "q")),
+                (self.ban, ("ban", "бан", "удалить", "забанить")),
+            )
+            for name in names
+        })
+
+    def is_channel_event(self, event: ChatEvent | StreamEvent) -> bool:
+        """Match the configured channel and the originating Shared Chat channel."""
+        if event.broadcaster_user_id != self.config.channel_id:
+            return False
+        return not isinstance(event, ChatEvent) or event.source_broadcaster_user_id in {
+            None,
+            "",
+            self.config.channel_id,
+        }
+
+    def command_user(self, frame: Frame) -> str | None:
+        """Identify viewer commands for admission before they enter the queue."""
+        payload = frame.payload
+        if not isinstance(payload, NotificationPayload) or not isinstance(
+            payload.event, ChatEvent
         ):
-            for name in names:
-                self.handlers[name] = handler
+            return None
+        event = payload.event
+        if not self.is_channel_event(event) or event.chatter_user_id == self.config.bot_id:
+            return None
+        parsed = parse_command(event.message.text, self.config.prefix)
+        return event.chatter_user_id if parsed and parsed[0] in self.handlers else None
 
     async def send(self, text: str, reply_to: str | None = None) -> str:
         try:
@@ -198,7 +216,7 @@ class Commands:
             raise ProtocolError("Команда получила не EventSub notification")
         event = payload.event
         kind = payload.subscription.type
-        if event.broadcaster_user_id != self.config.channel_id:
+        if not self.is_channel_event(event):
             self.state.filtered_events += 1
             return
         if kind == "stream.online":
@@ -212,24 +230,16 @@ class Commands:
             return
         if not isinstance(event, ChatEvent):
             raise ProtocolError("Chat notification без chat event")
-        await self._chat_message(frame, event)
+        await self._chat_message(event)
 
-    async def _chat_message(self, frame: Frame, event: ChatEvent) -> None:
-        # Do not execute commands originating in another Shared Chat channel.
-        source = event.source_broadcaster_user_id
-        if source and source != self.config.channel_id:
-            self.state.filtered_events += 1
-            return
+    async def _chat_message(self, event: ChatEvent) -> None:
         chat = Chat(
             event.message_id,
             event.chatter_user_id,
             event.chatter_user_login,
             event.chatter_user_name,
-            event.message.text,
         )
-        self.state.received += 1
-        self.state.last_message_at = time.time()
-        parsed = parse_command(chat.text, self.config.prefix)
+        parsed = parse_command(event.message.text, self.config.prefix)
         if chat.user_id == self.config.bot_id:
             # A single-use, locally requested diagnostic. Ordinary bot messages
             # never invoke commands, so the bot cannot get into a reply loop.
@@ -241,15 +251,6 @@ class Commands:
             ):
                 LOG.info("PROBE RECEIVED | diagnostic command reached handler")
             return
-        if self.config.log_chat:
-            timestamp = frame.metadata.message_timestamp or datetime.now(UTC).isoformat()
-            try:
-                await self.store.log_message(event, timestamp)
-                self.state.features["message_log"] = "READY"
-            except sqlite3.Error:
-                # An optional log write must not swallow a user's command.
-                self.state.features["message_log"] = "ERROR"
-                LOG.exception("Запись сообщения в журнал не удалась")
         await self._dispatch(chat, parsed)
 
     async def _dispatch(self, chat: Chat, parsed: tuple[str, str] | None) -> None:
@@ -258,14 +259,6 @@ class Commands:
         if not await self.store.claim_event(f"chat:{self.config.channel_id}:{chat.id}"):
             self.state.duplicate_events += 1
             return
-        now = time.monotonic()
-        previous = self._cooldowns.get(chat.user_id)
-        if previous is not None and now - previous < self.config.command_cooldown:
-            return
-        self._cooldowns[chat.user_id] = now
-        self._cooldowns.move_to_end(chat.user_id)
-        while len(self._cooldowns) > MAX_COOLDOWN_ENTRIES:
-            self._cooldowns.popitem(last=False)
         self.state.commands += 1
         self.state.last_command_at = time.time()
         LOG.info(
@@ -319,7 +312,7 @@ class Commands:
         target = await self.target(chat, name)
         if target is None:
             await self.reply(
-                chat, "Пользователь не найден. Укажите Twitch-логин, не отображаемое имя."
+                chat, "Не нашёл такой ник. Укажи логин Twitch, как в ссылке на канал."
             )
             return
         result = await self._followers(target.id)
@@ -327,14 +320,13 @@ class Commands:
             self.state.features["followage"] = "AUTH_REQUIRED"
             await self.reply(
                 chat,
-                "Followage временно недоступен: нужны права "
-                "moderator:read:followers у владельца канала или бота-модератора.",
+                "Не могу проверить фоллоу. Нужны права на просмотр фолловеров.",
             )
             return
         self.state.features["followage"] = "READY"
         rows = result.data
         if not rows:
-            await self.reply(chat, f"@{target.login} пока не зафоловлен на этот канал.")
+            await self.reply(chat, f"@{target.login} пока не фолловит этот канал.")
             return
         try:
             followed = datetime.fromisoformat(rows[0].followed_at)
@@ -377,8 +369,7 @@ class Commands:
             LOG.warning("Музыкальный сервис недоступен: %s", exc)
             await self.reply(
                 chat,
-                "Музыкальный сервис сейчас недоступен или не настроен. "
-                "Остальные команды работают.",
+                "Музыкальный сервис недоступен. Не получилось загрузить очередь треков.",
             )
             return None
         else:
@@ -389,7 +380,7 @@ class Commands:
         if tracks is None:
             return
         if not tracks:
-            await self.reply(chat, "В очереди нет непрослушанных треков")
+            await self.reply(chat, "В очереди пока нет треков.")
             return
         track = tracks[0]
         await self.reply(

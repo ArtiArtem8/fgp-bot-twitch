@@ -11,6 +11,7 @@ import sys
 import time
 import unittest
 import uuid
+from contextlib import ExitStack
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -19,17 +20,16 @@ import aiohttp
 from .app import run_bot
 from .auth import authorize
 from .config import CHAT_SCOPES, ROOT, ConfigError, load_config
-from .health import SingleInstance, read_status
+from .health import read_status, single_instance
 from .network import Http
 from .security import REDACT, setup_logging
 from .storage import Store
 from .tokens import Tokens
-from .twitch import HELIX, Twitch
+from .twitch import HELIX, Twitch, collect_subscriptions
 from .wire import Subscriptions, Users
 
 if TYPE_CHECKING:
     from .config import Config
-    from .wire import Subscription
 
 LOG = logging.getLogger(__name__)
 
@@ -54,7 +54,8 @@ def show_status(data: dict[str, Any], *, as_json: bool = False) -> None:
     print(
         f"Ошибки команд: {data.get('command_errors', 0)} | "
         f"отправки: {data.get('send_errors', 0)} | "
-        f"потери очереди: {data.get('dropped_events', 0)}"
+        f"потери очереди: {data.get('dropped_events', 0)} | "
+        f"ограничено команд: {data.get('throttled_commands', 0)}"
     )
     print(f"Сквозная проверка: {data.get('e2e', 'UNVERIFIED')}")
     for key, label in (
@@ -100,7 +101,7 @@ async def doctor(config: Config, *, offline: bool) -> dict[str, Any]:
         "configuration": "OK",
         "bot_id": config.bot_id,
         "channel_id": config.channel_id,
-        "channel_source": "TWITCH_CHANNEL_ID, либо совместимый fallback TWITCH_OWNER_ID",
+        "channel_source": "TWITCH_CHANNEL_ID; при отсутствии - TWITCH_OWNER_ID",
         "proxy": REDACT(config.proxy or "DIRECT"),
         "database_exists": config.database.exists(),
         "runtime": read_status(config.status_file),
@@ -158,7 +159,15 @@ async def _doctor_online(
         "GET", HELIX + "/users", params={"id": config.channel_id}, headers=headers, model=Users
     )
     report["channel"] = [{"id": u.id, "login": u.login} for u in users.data]
-    subs = await _subscriptions(http, headers)
+    subs = await collect_subscriptions(
+        lambda params: http.request(
+            "GET",
+            HELIX + "/eventsub/subscriptions",
+            params=params,
+            headers=headers,
+            model=Subscriptions,
+        )
+    )
     runtime = read_status(config.status_file)
     report["runtime"] = runtime
     api = Twitch(config, http, tokens)
@@ -166,29 +175,6 @@ async def _doctor_online(
         api.matches(sub, runtime.get("session_id", ""), "channel.chat.message") for sub in subs
     )
     report["chat_subscription_check"] = "READ_ONLY; сквозная доставка здесь не проверяется"
-
-
-async def _subscriptions(http: Http, headers: dict[str, str]) -> list[Subscription]:
-    subs: list[Subscription] = []
-    params: dict[str, str] = {}
-    cursors: set[str] = set()
-    for _ in range(100):
-        response = await http.request(
-            "GET",
-            HELIX + "/eventsub/subscriptions",
-            params=params,
-            headers=headers,
-            model=Subscriptions,
-        )
-        subs.extend(response.data)
-        cursor = response.pagination.cursor
-        if not cursor:
-            return subs
-        if cursor in cursors:
-            raise ValueError("EventSub pagination повторяет cursor")
-        cursors.add(cursor)
-        params["after"] = cursor
-    raise ValueError("Слишком много страниц EventSub")
 
 
 async def check_chat(config: Config) -> int:
@@ -341,18 +327,14 @@ def _execute(command: str, config: Config, arguments: argparse.Namespace) -> int
 def _run(config: Config) -> int:
     # Only the run process writes the rotating log. Auth and doctor cannot
     # race its rotation on Windows.
-    try:
-        lock = SingleInstance(config.data_dir / "bot.lock")
-        # Keep the lock through the async run and release it in finally.
-        lock.__enter__()  # ruff: ignore[unnecessary-dunder-call]
-    except RuntimeError as exc:
-        print(str(exc))
-        return 3
-    try:
+    with ExitStack() as resources:
+        try:
+            resources.enter_context(single_instance(config.data_dir / "bot.lock"))
+        except RuntimeError as exc:
+            print(str(exc))
+            return 3
         setup_logging(config.root, config.log_level)
         asyncio.run(run_bot(config))
-    finally:
-        lock.__exit__()
     return 0
 
 

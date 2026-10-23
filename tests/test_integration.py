@@ -7,10 +7,11 @@ URLs are replaced before any application task starts, and restored afterwards.
 import asyncio
 import io
 import socket
+import sqlite3
 import time
 from contextlib import ExitStack
 from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import aiohttp
@@ -243,7 +244,7 @@ class IntegrationTests(StoreCase):
         self.api = Twitch(self.config, self.http, Tokens(self.config, self.store, self.http))
         self.app = Application(self.config, self.store, self.api, self.state)
         await self.store.save_token("100", "synthetic-bot-access", "synthetic-bot-refresh")
-        # Reproduce the user's revoked owner credentials without reading any real credentials.
+        # Broadcaster and bot authorization are independent.
         await self.store.save_token("200", "synthetic-revoked-owner", "synthetic-revoked-refresh")
 
     async def start_bot(self) -> asyncio.Task[None]:
@@ -252,7 +253,7 @@ class IntegrationTests(StoreCase):
         await until(lambda: self.state.phase == "LISTENING", timeout=5)
         return task
 
-    async def test_original_incident_revoked_owner_but_bot_chat_works(self) -> None:
+    async def test_revoked_broadcaster_token_does_not_block_bot_chat(self) -> None:
         task = await self.start_bot()
         self.assertTrue(self.state.transport_ready)
         self.assertNotIn("synthetic-revoked-owner", self.server.validate_calls)
@@ -261,7 +262,28 @@ class IntegrationTests(StoreCase):
         await until(lambda: self.state.sent == 1)
         self.assertIn("Pong", self.server.sent[0]["message"])
         self.assertEqual(self.server.sent[0]["reply_parent_message_id"], "viewer-message-1")
+        archived = await self.store.call(
+            lambda db: db.execute(
+                "SELECT message_text FROM messages WHERE message_id=?", ("viewer-message-1",)
+            ).fetchone()
+        )
+        self.assertEqual(archived[0], "!ping")
         self.assertFalse(task.done())
+
+    async def test_archive_failure_stops_runtime_before_command_execution(self) -> None:
+        task = await self.start_bot()
+        with patch.object(
+            self.store,
+            "log_message",
+            AsyncMock(side_effect=sqlite3.OperationalError("synthetic archive failure")),
+        ):
+            await self.server.emit(notification())
+            await until(task.done)
+            with self.assertRaises(ExceptionGroup):
+                await task
+        self.assertEqual(self.state.features["message_log"], "ERROR")
+        self.assertFalse(self.state.transport_ready)
+        self.assertEqual(self.server.sent, [])
 
     async def test_startup_refresh_persists_rotated_pair_and_receives_command(self) -> None:
         self.server.bot_valid = False
@@ -368,7 +390,9 @@ class IntegrationTests(StoreCase):
         )
 
     async def test_http_chunked_json_is_read_to_eof(self) -> None:
-        result = await self.http.request("GET", self.server.base + "/http/chunked")
+        result = await self.http.request(
+            "GET", self.server.base + "/http/chunked", model=dict[str, int] | None
+        )
         self.assertEqual(result, {"value": 42})
 
     async def test_http_invalid_and_oversized_responses_fail_explicitly(self) -> None:

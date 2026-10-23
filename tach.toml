@@ -10,7 +10,7 @@ depends_on = []
 
 [[modules]]
 path = "fgpbot.app"
-depends_on = ["fgpbot.twitch", "fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.eventsub", "fgpbot.commands", "fgpbot.health", "fgpbot.config", "fgpbot.wire"]
+depends_on = ["fgpbot.twitch", "fgpbot.tokens", "fgpbot.security", "fgpbot.storage", "fgpbot.network", "fgpbot.eventsub", "fgpbot.commands", "fgpbot.concurrency", "fgpbot.health", "fgpbot.config", "fgpbot.wire"]
 
 [[modules]]
 path = "fgpbot.auth"
@@ -33,7 +33,7 @@ depends_on = ["fgpbot.twitch", "fgpbot.config", "fgpbot.tokens", "fgpbot.health"
 
 [[modules]]
 path = "fgpbot.health"
-depends_on = ["fgpbot", "fgpbot.security"]
+depends_on = ["fgpbot", "fgpbot.security", "fgpbot.concurrency"]
 
 [[modules]]
 path = "fgpbot.network"
@@ -44,7 +44,7 @@ path = "fgpbot.security"
 
 [[modules]]
 path = "fgpbot.storage"
-depends_on = ["fgpbot.wire"]
+depends_on = ["fgpbot.wire", "fgpbot.concurrency"]
 
 [[modules]]
 path = "fgpbot.tokens"
@@ -57,3 +57,6 @@ depends_on = ["fgpbot.network", "fgpbot.config", "fgpbot.tokens", "fgpbot.wire"]
 [[modules]]
 path = "fgpbot.wire"
 depends_on = ["fgpbot.network"]
+
+[[modules]]
+path = "fgpbot.concurrency"

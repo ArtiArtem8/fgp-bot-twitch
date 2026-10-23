@@ -136,6 +136,8 @@ class SubscriptionTests(StoreCase):
             subscription_page({"data": [], "pagination": {}}),
         ]
         self.assertEqual(len(await self.api.subscriptions()), 1)
+        self.assertEqual(self.request.call_args_list[0].kwargs["params"], {})
+        self.assertEqual(self.request.call_args_list[1].kwargs["params"], {"after": "next"})
         self.request.side_effect = [
             subscription_page({"data": [], "pagination": {"cursor": "loop"}}),
             subscription_page({"data": [], "pagination": {"cursor": "loop"}}),
@@ -192,7 +194,10 @@ class EventSubTests(StoreCase):
         self.api = fake_api()
         self.frames = []
         self.eventsub = EventSub(
-            self.config, cast("Twitch", self.api), self.state, self.frames.append
+            self.config,
+            cast("Twitch", self.api),
+            self.state,
+            AsyncMock(side_effect=self.frames.append),
         )
 
     async def test_fresh_connection_always_creates_chat_subscription(self) -> None:
@@ -233,9 +238,9 @@ class EventSubTests(StoreCase):
 
     async def test_notifications_are_deduplicated_and_wrong_channel_filtered(self) -> None:
         frame = notification()
-        self.eventsub._notification(wire_frame(frame))
-        self.eventsub._notification(wire_frame(frame))
-        self.eventsub._notification(wire_frame(notification(channel="999")))
+        await self.eventsub._notification(wire_frame(frame))
+        await self.eventsub._notification(wire_frame(frame))
+        await self.eventsub._notification(wire_frame(notification(channel="999")))
         self.assertEqual(len(self.frames), 1)
         self.assertEqual(self.state.duplicate_events, 1)
         self.assertEqual(self.state.filtered_events, 1)
@@ -247,7 +252,7 @@ class EventSubTests(StoreCase):
             "payload": {"subscription": subscription(status="authorization_revoked")},
         }
         with self.assertRaises(TransportError):
-            self.eventsub._notification(wire_frame(frame))
+            await self.eventsub._notification(wire_frame(frame))
         self.assertFalse(self.state.transport_ready)
 
     async def test_missing_keepalive_times_out_even_if_socket_not_closed(self) -> None:
@@ -352,7 +357,7 @@ class ProxyTests(StoreCase):
         ws.put(welcome())
         api.http.session = SimpleNamespace(ws_connect=AsyncMock(return_value=ws))
         conf = replace(self.config, proxy="http://127.0.0.1:12334")
-        eventsub = EventSub(conf, cast("Twitch", api), self.state, lambda _: None)
+        eventsub = EventSub(conf, cast("Twitch", api), self.state, AsyncMock())
         await eventsub._open("wss://eventsub.wss.twitch.tv/ws")
         kwargs = api.http.session.ws_connect.call_args.kwargs
         self.assertEqual(kwargs["proxy"], conf.proxy)

@@ -1,6 +1,9 @@
 import asyncio
 import io
+import json
+import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -8,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 from fgpbot import cli
 from fgpbot.app import run_bot
 from fgpbot.config import ConfigError
-from fgpbot.health import SingleInstance, read_status
+from fgpbot.health import read_status, single_instance
 from tests.helpers import StoreCase, cancel, config
 
 
@@ -36,7 +39,7 @@ class CLITests(unittest.TestCase):
 
     def test_second_instance_returns_three_without_opening_rotating_log(self) -> None:
         with (
-            SingleInstance(self.config.data_dir / "bot.lock"),
+            single_instance(self.config.data_dir / "bot.lock"),
             patch.object(cli, "load_config", return_value=self.config),
             patch.object(cli, "setup_logging") as setup,
             patch.object(cli, "run_bot") as run,
@@ -91,8 +94,40 @@ class CLITests(unittest.TestCase):
         self.assertIn("Последняя отправка:", output.getvalue())
         self.assertIn("greeting: UNAVAILABLE", output.getvalue())
 
+    def test_status_returns_unknown_for_corrupt_field_types(self) -> None:
+        self.config.data_dir.mkdir()
+        for field, value in (
+            ("features", []),
+            ("last_probe_detail", 123),
+            ("transport_ready", "false"),
+            ("schema", True),
+        ):
+            data = {"schema": 1, "written_at": time.time(), "status": "READY", field: value}
+            self.config.status_file.write_text(json.dumps(data), encoding="utf-8")
+            output = io.StringIO()
+            with (
+                self.subTest(field=field),
+                patch.object(cli, "ROOT", self.config.root),
+                patch("sys.stdout", output),
+            ):
+                self.assertEqual(cli.main(["status"]), 1)
+                self.assertIn("UNKNOWN", output.getvalue())
+
 
 class LifecycleTests(StoreCase):
+    async def test_database_initialization_failure_writes_failed_status(self) -> None:
+        with (
+            patch(
+                "fgpbot.app.Store.initialize",
+                AsyncMock(side_effect=sqlite3.OperationalError("synthetic database failure")),
+            ),
+            patch("fgpbot.app._run_session", AsyncMock()) as session,
+            self.assertRaises(sqlite3.OperationalError),
+        ):
+            await run_bot(self.config)
+        session.assert_not_awaited()
+        self.assertEqual(read_status(self.config.status_file)["status"], "FAILED")
+
     async def test_unhandled_failure_writes_failed_status_before_reraising(self) -> None:
         with (
             patch(

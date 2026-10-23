@@ -101,10 +101,8 @@ class Tokens:
         if (
             cached
             and (cached.access, cached.refresh) == pair
-            and (
-                now - cached.validated_at < VALIDATION_CACHE_SECONDS
-                and cached.expires_at - now > REFRESH_MARGIN_SECONDS
-            )
+            and now - cached.validated_at < VALIDATION_CACHE_SECONDS
+            and cached.expires_at - now > REFRESH_MARGIN_SECONDS
         ):
             return self.require_scopes(cached, scopes)
         return None

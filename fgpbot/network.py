@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from http import HTTPStatus
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, TypeForm, cast, overload
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -49,7 +49,7 @@ class Http:
 
     @staticmethod
     async def _read_response[T](
-        response: aiohttp.ClientResponse, safe_target: str, model: type[T]
+        response: aiohttp.ClientResponse, safe_target: str, model: TypeForm[T]
     ) -> T:
         # Consume the complete body with a hard cap; read(n) may return one chunk.
         raw = bytearray()
@@ -69,7 +69,8 @@ class Http:
                 retry_after = 0
             raise RemoteError(response.status, detail, retry_after)
         try:
-            return msgspec.json.decode(raw or b"{}", type=model)
+            # msgspec validates the model; its stubs do not infer TypeForm yet.
+            return cast("T", msgspec.json.decode(raw or b"{}", type=model))
         except msgspec.DecodeError:
             raise ProtocolError(f"Некорректный JSON или тип поля от {safe_target}") from None
 
@@ -78,7 +79,7 @@ class Http:
         method: str,
         url: str,
         safe_target: str,
-        model: type[T],
+        model: TypeForm[T],
         *,
         headers: Mapping[str, str] | None,
         params: Mapping[str, str] | list[tuple[str, str]] | None,
@@ -105,7 +106,7 @@ class Http:
         method: str,
         url: str,
         *,
-        model: type[T],
+        model: TypeForm[T],
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, str] | list[tuple[str, str]] | None = None,
         json: object = None,
@@ -129,7 +130,7 @@ class Http:
         method: str,
         url: str,
         *,
-        model: type[object] = object,
+        model: TypeForm[object] = object,
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, str] | list[tuple[str, str]] | None = None,
         json: object = None,

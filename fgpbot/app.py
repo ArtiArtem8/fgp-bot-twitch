@@ -2,12 +2,17 @@
 
 import asyncio
 import logging
+import sqlite3
 import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import aiohttp
 
 from .commands import Commands
+from .concurrency import run_blocking
 from .config import CHAT_SCOPES
 from .eventsub import EventSub
 from .health import Health, atomic_json, status_writer
@@ -16,6 +21,7 @@ from .security import REDACT
 from .storage import Store
 from .tokens import AuthRequiredError, Tokens
 from .twitch import DeliveryError, Twitch
+from .wire import ChatEvent, NotificationPayload
 
 if TYPE_CHECKING:
     from .config import Config
@@ -27,6 +33,17 @@ AUDIT_INTERVAL = 60
 MAX_QUEUE_AGE_SECONDS = 60
 CLEANUP_INTERVAL_SECONDS = 3600
 PROBE_ECHO_TIMEOUT_SECONDS = 35
+COMMAND_WORKERS = 4
+MAX_COOLDOWN_ENTRIES = 2048
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedEvent:
+    """Keep the arrival time and reserved command owner with an event."""
+
+    queued_at: float
+    frame: Frame
+    user_id: str | None = None
 
 
 class Application:
@@ -34,30 +51,84 @@ class Application:
 
     def __init__(self, config: Config, store: Store, api: Twitch, state: Health) -> None:
         self.config, self.store, self.api, self.state = config, store, api, state
-        self.queue: asyncio.Queue[tuple[float, Frame]] = asyncio.Queue(maxsize=config.queue_size)
+        self.queue: asyncio.Queue[QueuedEvent] = asyncio.Queue(maxsize=config.queue_size)
         self.commands = Commands(config, api, store, state)
-        self.eventsub = EventSub(config, api, state, self.enqueue)
+        self.eventsub = EventSub(config, api, state, self.ingest)
+        self._pending_users: set[str] = set()
+        self._cooldowns: OrderedDict[str, float] = OrderedDict()
+        self._worker_ticks = [time.monotonic()] * COMMAND_WORKERS
+
+    async def ingest(self, frame: Frame) -> None:
+        """Commit chat history before any command can be throttled or dropped."""
+        payload = frame.payload
+        if isinstance(payload, NotificationPayload) and isinstance(payload.event, ChatEvent):
+            event = payload.event
+            if not self.commands.is_channel_event(event):
+                self.state.filtered_events += 1
+                return
+            self.state.received += 1
+            self.state.last_message_at = time.time()
+            if event.chatter_user_id != self.config.bot_id:
+                await self._archive(frame, event)
+                if self.commands.command_user(frame) is None:
+                    return
+        self.enqueue(frame)
+
+    async def _archive(self, frame: Frame, event: ChatEvent) -> None:
+        timestamp = frame.metadata.message_timestamp or datetime.now(UTC).isoformat()
+        try:
+            await self.store.log_message(event, timestamp)
+        except sqlite3.Error:
+            self.state.features["message_log"] = "ERROR"
+            raise
+        self.state.features["message_log"] = "READY"
 
     def enqueue(self, frame: Frame) -> None:
+        now = time.monotonic()
+        user_id = self.commands.command_user(frame)
+        if user_id is not None and (
+            user_id in self._pending_users
+            or now - self._cooldowns.get(user_id, float("-inf")) < self.config.command_cooldown
+        ):
+            self.state.throttled_commands += 1
+            return
         try:
-            self.queue.put_nowait((time.monotonic(), frame))
-            self.state.queue_depth = self.queue.qsize()
+            self.queue.put_nowait(QueuedEvent(now, frame, user_id))
         except asyncio.QueueFull:
             self.state.dropped_events += 1
             self.state.last_drop_at = time.time()
             self.state.error("Переполнена очередь событий; часть событий потеряна")
             if self.state.dropped_events == 1 or self.state.dropped_events % 100 == 0:
                 LOG.error("EVENT QUEUE FULL | dropped=%s", self.state.dropped_events)  # ruff: ignore[error-instead-of-exception] - expected overload
+        else:
+            if user_id is not None:
+                self._pending_users.add(user_id)
+                self._cooldowns[user_id] = now
+                self._cooldowns.move_to_end(user_id)
+                while len(self._cooldowns) > MAX_COOLDOWN_ENTRIES:
+                    self._cooldowns.popitem(last=False)
+            self.state.queue_depth = self.queue.qsize()
 
     async def worker(self) -> None:
+        """Own a fixed number of workers; a slow viewer cannot occupy all of them."""
+        async with asyncio.TaskGroup() as group:
+            for index in range(COMMAND_WORKERS):
+                group.create_task(self._consume(index), name=f"commands-{index}")
+
+    def _heartbeat(self, index: int) -> None:
+        self._worker_ticks[index] = time.monotonic()
+        self.state.worker_mono = min(self._worker_ticks)
+
+    async def _consume(self, index: int) -> None:
         while True:
-            self.state.worker_mono = time.monotonic()
+            self._heartbeat(index)
             try:
-                queued, frame = await asyncio.wait_for(self.queue.get(), timeout=1)
+                async with asyncio.timeout(1):
+                    item = await self.queue.get()
             except TimeoutError:
                 continue
             try:
-                await self._handle_frame(queued, frame)
+                await self._handle_frame(item.queued_at, item.frame)
             except (
                 NetworkError,
                 RemoteError,
@@ -71,9 +142,11 @@ class Application:
                 self.state.error("Некорректные данные события; подробности в логе")
                 LOG.exception("Некорректные данные события")
             finally:
+                if item.user_id is not None:
+                    self._pending_users.discard(item.user_id)
                 self.queue.task_done()
                 self.state.queue_depth = self.queue.qsize()
-                self.state.worker_mono = time.monotonic()
+                self._heartbeat(index)
 
     async def _handle_frame(self, queued: float, frame: Frame) -> None:
         if time.monotonic() - queued > MAX_QUEUE_AGE_SECONDS:
@@ -105,7 +178,7 @@ class Application:
             try:
                 await self._audit_subscription()
                 if time.monotonic() - last_cleanup > CLEANUP_INTERVAL_SECONDS:
-                    await self.store.cleanup(self.config.chat_retention_days)
+                    await self.store.cleanup()
                     last_cleanup = time.monotonic()
             except AuthRequiredError as exc:
                 self.state.auth_ok = False
@@ -225,15 +298,15 @@ async def _run_session(config: Config, store: Store, state: Health) -> None:
 async def run_bot(config: Config) -> None:
     """Run the application until shutdown and close its resources."""
     store = Store(config.database)
-    await store.initialize()
     state = Health(config.bot_id, config.channel_id)
     state.features.update(
         music="NOT_CHECKED" if config.music_token else "NOT_CONFIGURED",
         followage="NOT_CHECKED",
-        message_log="ENABLED" if config.log_chat else "DISABLED",
+        message_log="ENABLED",
     )
     failed = False
     try:
+        await store.initialize()
         await _run_session(config, store, state)
     except asyncio.CancelledError:
         raise
@@ -245,4 +318,4 @@ async def run_bot(config: Config) -> None:
         state.ws_connected = False
         state.subscriptions.clear()
         state.phase = "FAILED" if failed else "STOPPED"
-        await asyncio.to_thread(atomic_json, config.status_file, state.snapshot())
+        await run_blocking(atomic_json, config.status_file, state.snapshot())

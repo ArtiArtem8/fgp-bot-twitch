@@ -1,6 +1,5 @@
 """Persist tokens, chat events, and probes in local SQLite."""
 
-import asyncio
 import os
 import sqlite3
 import time
@@ -8,6 +7,8 @@ from contextlib import closing
 from typing import TYPE_CHECKING, ReadOnly, TypedDict
 
 import msgspec
+
+from .concurrency import run_blocking
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -19,7 +20,7 @@ PROBE_COOLDOWN_SECONDS = 30
 
 
 class TokenRow(TypedDict):
-    """Read-only snapshot of the existing tokens table."""
+    """Read-only snapshot of stored OAuth credentials."""
 
     user_id: ReadOnly[str]
     token: ReadOnly[str]
@@ -60,6 +61,11 @@ CREATE TABLE IF NOT EXISTS messages(
     timestamp DATETIME NOT NULL, badges TEXT, is_subscriber BOOLEAN, is_follower BOOLEAN,
     message_type TEXT NOT NULL
 );
+CREATE TRIGGER IF NOT EXISTS messages_preserve_history
+BEFORE DELETE ON messages
+BEGIN
+    SELECT RAISE(ABORT, 'Chat history must not be deleted');
+END;
 CREATE TABLE IF NOT EXISTS fgp_seen(key TEXT PRIMARY KEY, created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS fgp_seen_created ON fgp_seen(created);
 CREATE TABLE IF NOT EXISTS fgp_probes(
@@ -88,7 +94,9 @@ class Store:
                 return callback(db)
 
     async def call[T](self, callback: Callable[[sqlite3.Connection], T]) -> T:
-        return await asyncio.to_thread(lambda: self._transaction(callback))
+        # Cancellation does not stop a thread. Keep the transaction owned until
+        # it commits or rolls back, before callers release locks or shut down.
+        return await run_blocking(lambda: self._transaction(callback))
 
     async def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,14 +260,11 @@ class Store:
             )
         )
 
-    async def cleanup(self, chat_retention_days: int) -> None:
+    async def cleanup(self) -> None:
+        """Expire diagnostic metadata while preserving the entire chat archive."""
+
         def cleanup(db: sqlite3.Connection) -> None:
             db.execute("DELETE FROM fgp_seen WHERE created<?", (time.time() - 86400,))
             db.execute("DELETE FROM fgp_probes WHERE created<?", (time.time() - 7 * 86400,))
-            if chat_retention_days > 0:
-                db.execute(
-                    "DELETE FROM messages WHERE julianday(timestamp)<julianday('now',?)",
-                    (f"-{chat_retention_days} days",),
-                )
 
         await self.call(cleanup)

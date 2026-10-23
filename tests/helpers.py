@@ -32,7 +32,6 @@ def config(root: Path, **kwargs: object) -> Config:
             client_secret="synthetic-client-secret",  # ruff: ignore[hardcoded-password-func-arg] - synthetic fixture
             bot_id="100",
             channel_id="200",
-            owner_id="200",
             root=root,
             proxy=None,
             greet_stream=False,

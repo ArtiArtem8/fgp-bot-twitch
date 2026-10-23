@@ -1,6 +1,7 @@
 """The small subset of Twitch JSON that this bot actually consumes."""
 
 from dataclasses import dataclass
+from typing import TypeForm, cast
 
 import msgspec
 
@@ -222,10 +223,11 @@ class Frame:
     )
 
 
-def decode[T](raw: bytes | str, model: type[T], context: str) -> T:
+def decode[T](raw: bytes | str, model: TypeForm[T], context: str) -> T:
     """Decode without putting untrusted response bodies in exceptions or logs."""
     try:
-        return msgspec.json.decode(raw, type=model)
+        # msgspec validates the model; its stubs do not infer TypeForm yet.
+        return cast("T", msgspec.json.decode(raw, type=model))
     except msgspec.DecodeError:
         raise ProtocolError(f"{context}: некорректный JSON или тип поля") from None
 
