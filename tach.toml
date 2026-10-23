@@ -22,7 +22,10 @@ depends_on = ["fgpbot.tokens", "fgpbot.config", "fgpbot.storage", "fgpbot.app", 
 
 [[modules]]
 path = "fgpbot.commands"
-depends_on = ["fgpbot.config", "fgpbot.network", "fgpbot.storage", "fgpbot.security", "fgpbot.health", "fgpbot.twitch", "fgpbot.tokens", "fgpbot.wire"]
+depends_on = ["fgpbot.ban", "fgpbot.config", "fgpbot.network", "fgpbot.storage", "fgpbot.security", "fgpbot.health", "fgpbot.twitch", "fgpbot.tokens", "fgpbot.wire"]
+
+[[modules]]
+path = "fgpbot.ban"
 
 [[modules]]
 path = "fgpbot.config"

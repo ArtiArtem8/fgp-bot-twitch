@@ -2,12 +2,14 @@ import asyncio
 import sqlite3
 import time
 from dataclasses import replace
+from operator import itemgetter
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
 import msgspec
 
 from fgpbot.app import MAX_COOLDOWN_ENTRIES, Application, QueuedEvent
+from fgpbot.ban import SEQUENCES, SPECIAL
 from fgpbot.commands import Commands, Music, MusicTrack
 from fgpbot.network import NetworkError, ProtocolError
 from fgpbot.tokens import AuthRequiredError
@@ -180,6 +182,45 @@ class CommandTests(StoreCase):
         await self.receive(notification(kind="stream.online", message_id="stream-id"))
         await self.receive(notification(kind="stream.online", message_id="stream-id"))
         self.api.send.assert_awaited_once()
+
+    async def test_ban_scene_through_chat_and_history_preservation(self) -> None:
+        self.api.users.return_value = [User("400", "friend")]
+        with patch("fgpbot.ban.secrets.choice", side_effect=itemgetter(0)):
+            for i in range(3):
+                await self.receive(notification("!бан friend", message_id=f"ban-{i}"))
+                self.assertEqual(
+                    self.api.send.call_args.args[0],
+                    SEQUENCES[0][i].format(target="@friend", invoker="@viewer"),
+                )
+                await self.receive(notification("still here", message_id=f"text-{i}"))
+        self.assertEqual(self.api.send.await_count, 3)
+        self.api.request.assert_not_awaited()
+        self.assertEqual(
+            await self.store.call(
+                lambda db: db.execute("SELECT count(*) FROM messages").fetchone()[0]
+            ),
+            6,
+        )
+
+    async def test_special_ban_targets_and_unknown_user(self) -> None:
+        for kind, user in (
+            ("self", User("300", "viewer")),
+            ("bot", User("100", "bot")),
+            ("streamer", User("200", "streamer")),
+        ):
+            self.api.users.return_value = [user]
+            await self.receive(notification(f"!бан {user.login}", message_id=kind))
+            self.assertIn(
+                self.api.send.call_args.args[0],
+                [
+                    text.format(target=f"@{user.login}", invoker="@viewer")
+                    for text in SPECIAL[kind]
+                ],
+            )
+        self.api.users.return_value = []
+        await self.receive(notification("!бан nobody", message_id="unknown"))
+        self.assertIn("не нашёл", self.api.send.call_args.args[0])
+        self.api.request.assert_not_awaited()
 
     async def test_probe_from_viewer_or_wrong_message_id_cannot_forge_success(self) -> None:
         nonce = "e" * 32

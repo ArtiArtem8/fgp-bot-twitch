@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import msgspec
 
+from .ban import BanResponder
 from .config import FOLLOW_SCOPE
 from .network import NetworkError, ProtocolError, RemoteError
 from .security import REDACT
@@ -20,6 +21,7 @@ from .wire import ChatEvent, Followers, NotificationPayload, StreamEvent, User
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from .ban import BanKind
     from .config import Config
     from .health import Health
     from .network import Http
@@ -145,7 +147,7 @@ class Commands:
     def __init__(self, config: Config, api: Twitch, store: Store, state: Health) -> None:
         self.config, self.api, self.store, self.state = config, api, store, state
         self.music = Music(api.http, config.music_token)
-        self._ban_index = 0
+        self.ban_responder = BanResponder()
         self.handlers: frozendict[str, Callable[[Chat, str], Awaitable[None]]] = frozendict({
             name: handler
             for handler, names in (
@@ -289,7 +291,7 @@ class Commands:
             chat,
             (
                 f"Команды: {p}ping, {p}followage [ник], {p}трек, "
-                f"{p}очередь, {p}дс, {p}тг, {p}бан [ник] (шуточный)."
+                f"{p}очередь, {p}дс, {p}тг, {p}бан [ник]."
             ),
         )
 
@@ -396,21 +398,20 @@ class Commands:
     async def ban(self, chat: Chat, name: str) -> None:
         target = await self.target(chat, name)
         if target is None:
-            await self.reply(chat, "Такого Twitch-пользователя не найдено.")
-        elif target.id == chat.user_id:
-            await self.reply(chat, "Самобан отменён. Оставайся с нами 🙂")
-        elif target.id == self.config.bot_id:
-            await self.reply(
-                chat, "Бот отклонил свой шуточный бан. У него лапки, но есть право вето."
-            )
+            await self.reply(chat, "Такого ника не нашёл. Ты уже и людей для бана выдумываешь?")
+            return
+        kind: BanKind
+        if target.id == self.config.bot_id:
+            kind = "bot"
         elif target.id == self.config.channel_id:
-            await self.reply(chat, "Стримера забанить не получилось: кто тогда будет стримить?")
+            kind = "streamer"
+        elif target.id == chat.user_id:
+            kind = "self"
         else:
-            templates = (
-                "Шуточный бан: @{target} отправлен в воображаемое небытие.",  # ruff: ignore[missing-f-string-syntax]
-                "@{target} не прошёл проверку серьёзностью. Виртуальный бан на три смешинки.",  # ruff: ignore[missing-f-string-syntax]
-                "Модерация понарошку молниеносна: @{target}, ты всё ещё с нами.",  # ruff: ignore[missing-f-string-syntax]
-            )
-            text = templates[self._ban_index % len(templates)].format(target=target.login)
-            self._ban_index += 1
-            await self.reply(chat, text)
+            kind = "viewer"
+        template = self.ban_responder.reply(
+            target.id, chat.user_id, kind=kind, now=time.monotonic()
+        )
+        await self.reply(
+            chat, template.format(target=f"@{target.login}", invoker=f"@{chat.login}")
+        )
