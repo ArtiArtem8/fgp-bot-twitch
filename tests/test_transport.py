@@ -1,7 +1,9 @@
 import asyncio
 import json
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
@@ -10,12 +12,14 @@ import aiohttp
 import msgspec
 
 from fgpbot.eventsub import EventSub, RecentIDs, TransportError, reconnect_url
+from fgpbot.health import Health
 from fgpbot.network import Http, NetworkError, ProtocolError, RemoteError
 from fgpbot.twitch import DeliveryError, Twitch
 from fgpbot.wire import SendChat, Session, Subscription, Subscriptions, User, eventsub
 from tests.helpers import (
     StoreCase,
     cancel,
+    config,
     fake_api,
     notification,
     ready,
@@ -378,3 +382,52 @@ class ProxyTests(StoreCase):
         )
         self.assertEqual(session.request.call_args.kwargs["proxy"], http.proxy)
         self.assertFalse(session.request.call_args.kwargs["allow_redirects"])
+
+
+class _StopBackoffError(Exception):
+    """End the otherwise infinite reconnect loop once the delays are recorded."""
+
+
+class BackoffTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="fgpbot-backoff-")
+        self.addCleanup(self.temp.cleanup)
+        self.config = config(Path(self.temp.name))
+
+    async def test_backoff_resets_before_the_first_delay_after_a_long_lived_connection(
+        self,
+    ) -> None:
+        clock = [0.0]
+        delays: list[float] = []
+        attempts = 0
+        state = Health(self.config.bot_id, self.config.channel_id)
+        eventsub = EventSub(self.config, cast("Twitch", fake_api()), state, AsyncMock())
+
+        async def connect() -> None:  # ruff: ignore[unused-async] - async test double
+            nonlocal attempts
+            attempts += 1
+            if attempts == 4:
+                # This attempt lived past FAILURE_RESET_SECONDS before dropping.
+                clock[0] += 61
+            raise TransportError(f"synthetic failure {attempts}")
+
+        async def sleep(delay: float) -> None:  # ruff: ignore[unused-async] - async test double
+            delays.append(delay)
+            if len(delays) == 4:
+                raise _StopBackoffError
+
+        with (
+            patch.object(eventsub, "_connect", new=connect),
+            patch("fgpbot.eventsub.time", new=SimpleNamespace(monotonic=lambda: clock[0])),
+            patch("fgpbot.eventsub.asyncio", new=SimpleNamespace(sleep=sleep)),
+            self.assertRaises(_StopBackoffError),
+        ):
+            await asyncio.wait_for(eventsub.run(), 2)
+
+        self.assertEqual((attempts, state.reconnects), (4, 4))
+        # Three fast failures back off exponentially.
+        self.assertTrue(1 <= delays[0] <= 2, delays)
+        self.assertTrue(2 <= delays[1] <= 4, delays)
+        self.assertTrue(4 <= delays[2] <= 8, delays)
+        # Reset is applied before this delay: it is short again, not 8-16 seconds.
+        self.assertTrue(1 <= delays[3] <= 2, delays)

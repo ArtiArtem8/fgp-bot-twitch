@@ -23,7 +23,7 @@ from fgpbot.commands import (
 )
 from fgpbot.config import ConfigError, load_config
 from fgpbot.health import Health, atomic_json, read_status, single_instance, status_writer
-from fgpbot.security import REDACT, Redactor, SafeFormatter
+from fgpbot.security import REDACT, Redactor, SafeFormatter, setup_logging
 from fgpbot.storage import Store
 from fgpbot.wire import Badge, ChatEvent
 from tests.helpers import StoreCase, notification, ready, until
@@ -117,6 +117,29 @@ class PureCommandTests(unittest.TestCase):
 
 
 class SecurityTests(unittest.TestCase):
+    def test_setup_logging_redacts_registered_secret_on_disk_and_console(self) -> None:
+        root = logging.RootLogger(logging.WARNING)
+        access = logging.getLogger("aiohttp.access")
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(logging, "root", root),
+            patch.object(access, "disabled", new=False),
+            patch("sys.stderr", new_callable=io.StringIO) as console,
+            patch("fgpbot.security.REDACT", new_callable=Redactor) as redact,
+        ):
+            redact.add("synthetic-log-secret")
+            setup_logging(Path(folder), "INFO")
+            try:
+                root.info("probe %s", "synthetic-log-secret")
+                disk = (Path(folder) / "logs" / "fgpbot.log").read_text(encoding="utf-8")
+                for output in (console.getvalue(), disk):
+                    self.assertIn("probe [REDACTED]", output)
+                    self.assertNotIn("synthetic-log-secret", output)
+                self.assertTrue(access.disabled)
+            finally:
+                for handler in root.handlers:
+                    handler.close()
+
     def test_redacts_urls_headers_dictionaries_and_encoded_values(self) -> None:
         r = Redactor()
         r.add("secret with/slashes")
