@@ -89,7 +89,7 @@ class Store:
     def _transaction[T](self, callback: Callable[[sqlite3.Connection], T]) -> T:
         with closing(sqlite3.connect(self.path, timeout=5)) as db:
             db.row_factory = sqlite3.Row
-            db.execute("PRAGMA busy_timeout=5000")
+            db.execute("PRAGMA synchronous=FULL")
             with db:
                 return callback(db)
 
@@ -103,7 +103,6 @@ class Store:
 
         def initialize(db: sqlite3.Connection) -> None:
             db.execute("PRAGMA journal_mode=WAL")
-            db.execute("PRAGMA synchronous=FULL")
             db.executescript(SCHEMA)
 
         await self.call(initialize)
